@@ -300,7 +300,15 @@ function failureGap(kind: SectionKind, outcome: FetchOutcome): ContextGap {
   if (outcome.status === 'timeout') {
     return { code: 'source_timeout', source: kind, reason: `The ${kind} source did not answer within ${outcome.timeoutMs} ms.` };
   }
-  return { code: UNAVAILABLE_CODE[kind], source: kind, reason: `The ${kind} source could not be read.` };
+  const code = outcome.gapCode === 'source_error' ? 'source_error' : (outcome.gapCode ?? UNAVAILABLE_CODE[kind]);
+  return {
+    code,
+    source: kind,
+    reason:
+      code === 'source_error'
+        ? `The ${kind} source returned a response that could not be used.`
+        : `The ${kind} source could not be read.`,
+  };
 }
 
 function compareForDisplay(kind: SectionKind) {

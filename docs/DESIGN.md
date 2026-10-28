@@ -17,7 +17,7 @@ Guarantees:
 | Package | Contents |
 |---------|----------|
 | `packages/core` | Ports, config schema and loader, templates, redaction, the build pipeline (`buildContext`), `packetHash`. No network I/O. |
-| `packages/adapters` | Config-file policy and tool catalog, approximate tokenizer, system clock, Redis stream audit emitter, local identity resolver, in-process sources. |
+| `packages/adapters` | Config-file policy and tool catalog, approximate tokenizer, system clock, Redis stream audit emitter, local identity resolver, in-process sources, Phase-2 HTTP clients for memory / audit / analytics (service JWT, `X-Act-As`, retries, circuit breaker, SSRF allow-list). |
 | `apps/context-api` | Fastify HTTP surface and the wiring (`runtime.ts`). |
 
 The core depends only on ports. Fakes for the sources live in `packages/core/src/pipeline/__fixtures__/` and in test files; they are excluded from the build and not exported.
@@ -76,7 +76,8 @@ Every dropped item is counted per source in `manifest.sources.<kind>.droppedReas
 | `no_analytics_for_campaign` | The analytics section is planned and no usable item came back (with a `suggestedQuestion`). |
 | `need_refused_by_policy`, `need_out_of_limits` | A need was refused in the plan step. |
 | `source_timeout` | A source did not answer in time. |
-| `<source>_unavailable` | A source failed. |
+| `source_error` | A source returned a response that failed schema / contract validation (or another adapter-signalled error). |
+| `<source>_unavailable` | A source failed without a more specific gap code. |
 
 Empty sources other than analytics are not gaps: no memory is a normal state. Gap reasons are generic text; they never include text from a source or from an error.
 
@@ -101,8 +102,11 @@ Empty sources other than analytics are not gaps: no memory is a normal state. Ga
 |---------|---------|-------|
 | policy | `ConfigPolicySource` | `config/policy.yaml`, statements filtered by `appliesTo` |
 | tools | `ConfigToolCatalogSource` | `config/tools.yaml` filtered by `appliesTo`, minus `restrictedTools` for the step |
-| task | `IdentityTaskSource` | the goal and thread from the identity only; no status or budget until a Hub-backed source exists |
-| conversation, memory, audit_history, analytics | `FixedEmptySource` | always empty, until their backing services are connected; analytics then yields `no_analytics_for_campaign` |
+| task | `TaskStateHttpSource` when `HUB_BASE_URL` + key are set; else `IdentityTaskSource` | Hub `GET /v1/internal/goals/{goalId}/state` |
+| conversation | `ConversationHttpSource` when `HUB_BASE_URL` + key are set; else empty | Hub `GET /v1/internal/threads/{threadId}/messages` |
+| memory | `MemoryHttpSource` when env URLs + key are set; else empty | `POST /v1/memories/search`, `GET /v1/profiles` |
+| audit_history | `AuditHttpSource` when env URLs + key are set; else empty | `GET /v1/events`, `GET /v1/traces/{id}` |
+| analytics | `AnalyticsHttpSource` (same audit base URL); else empty | `GET /v1/analytics/campaigns`, `/summary`, `/compare` |
 | tokenizer | `ApproximateTokenizer` | one token per four characters, rounded up |
 | clock | `SystemClock` | |
 | audit | `RedisStreamAuditEmitter` | `XADD proba.audit.events * data=<AuditEvent JSON> publishedAt=<UTC ISO> key=<workspaceId>`; each event is validated against the protocol schema first |
@@ -143,9 +147,9 @@ Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "
 | Phase | Scope |
 |-------|-------|
 | 0 | Scaffold: monorepo, ports, config, templates, hash, health endpoint, CI, container |
-| 1 | Pipeline, redaction, budgeting, scope filter, config-file policy and tools, Redis stream audit, local identity, `POST /v1/context/build` (this document) |
-| 2 | Real sources (Hub thread and task, proba-memory, proba-audit, analytics) and act-as assertion verification |
-| 3 | Typed needs from live sources, optional cache |
+| 1 | Pipeline, redaction, budgeting, scope filter, config-file policy and tools, Redis stream audit, local identity, `POST /v1/context/build` |
+| 2 | HTTP sources for memory, audit history and analytics; Hub conversation/task still empty until brief 05 merges |
+| 3 | Act-as assertion verification, Hub authorize, admin Firebase routes, rate limits |
 
 ## Open questions
 

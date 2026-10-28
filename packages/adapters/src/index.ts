@@ -16,6 +16,21 @@ export {
   createInProcessSources,
   type InProcessSourcesOptions,
 } from './sources/inProcessSources.js';
+export { MemoryHttpSource, type MemoryHttpSourceOptions } from './sources/memoryHttpSource.js';
+export { AuditHttpSource, type AuditHttpSourceOptions } from './sources/auditHttpSource.js';
+export { AnalyticsHttpSource, type AnalyticsHttpSourceOptions } from './sources/analyticsHttpSource.js';
+export { TaskStateHttpSource, type TaskStateHttpSourceOptions } from './sources/taskStateHttpSource.js';
+export {
+  ConversationHttpSource,
+  type ConversationHttpSourceOptions,
+} from './sources/conversationHttpSource.js';
+export {
+  createHttpSources,
+  type CreateHttpSourcesOptions,
+  type HttpSourceEndpoints,
+  type HttpSources,
+  type WiredHttpSource,
+} from './sources/httpSources.js';
 export {
   DEFAULT_AUDIT_STREAM,
   RedisStreamAuditEmitter,
@@ -32,3 +47,39 @@ export {
   UnconfiguredIdentityResolver,
   assertLocalIdentityAllowed,
 } from './identity/localIdentityResolver.js';
+export {
+  DownstreamClient,
+  type DownstreamClientOptions,
+  type DownstreamRequest,
+  type DownstreamResponse,
+  type FetchLike,
+} from './http/downstreamClient.js';
+export {
+  assertAllowedBaseUrl,
+  hostKeyFromUrl,
+  isAllowedDownstreamHost,
+} from './http/allowlist.js';
+export { CircuitBreaker, type CircuitBreakerOptions, type CircuitState } from './http/circuitBreaker.js';
+export {
+  RetryableFailure,
+  isRetryableStatus,
+  retryDelayMs,
+  withRetries,
+  type RetryOptions,
+} from './http/retry.js';
+export {
+  CONTEXT_SERVICE_ISSUER,
+  CONTEXT_SERVICE_SUBJECT,
+  CONTEXT_SERVICE_TOKEN_MAX_TTL_SECONDS,
+  createServiceTokenSigner,
+  loadServicePrivateKey,
+  type DownstreamAudience,
+  type PrivateKeyMaterial,
+  type ServiceTokenSigner,
+} from './http/serviceToken.js';
+export {
+  CircuitOpenError,
+  DownstreamHostRefusedError,
+  SourceAdapterError,
+} from './http/errors.js';
+export { requireActAsAssertion, scopeParams } from './http/actAs.js';

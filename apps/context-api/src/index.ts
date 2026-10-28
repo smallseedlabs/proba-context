@@ -35,6 +35,7 @@ async function main(): Promise<void> {
         configVersion: runtime.config.version,
         identityMode: runtime.identityMode,
         auditSink: runtime.auditSink,
+        httpSources: runtime.httpSources,
       },
       'configuration loaded'
     );

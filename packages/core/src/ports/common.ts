@@ -11,6 +11,11 @@ export interface ResolvedIdentity {
   scopes: readonly string[];
   /** The verified claims, when the identity came from an act-as assertion. */
   claims?: ActAsAssertionClaims;
+  /**
+   * Raw `X-Act-As` JWT to forward on downstream reads. Present when the identity came from an
+   * assertion (Phase 3) or when a caller supplies it alongside a local identity for workstation runs.
+   */
+  actAsAssertion?: string;
 }
 
 /** What every source receives: who is asking, for which request. */

@@ -2,7 +2,7 @@
   "name": "@smallseedlabs/proba-context-adapters",
   "version": "0.1.0",
   "private": true,
-  "description": "Policy, tool catalog, tokenizer, clock, audit and identity adapters for proba-context",
+  "description": "Policy, tool catalog, tokenizer, clock, audit, identity and HTTP source adapters for proba-context",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +16,7 @@
   "dependencies": {
     "@smallseedlabs/proba-context-core": "*",
     "ioredis": "^6.0.0",
+    "jose": "^5.10.0",
     "zod": "^3.23.8"
   }
 }

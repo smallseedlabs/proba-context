@@ -1,3 +1,5 @@
+import { createPrivateKey } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   ConfigError,
@@ -13,9 +15,12 @@ import {
   LogAuditEmitter,
   SystemClock,
   UnconfiguredIdentityResolver,
+  createHttpSources,
   createInProcessSources,
   createRedisStreamAuditEmitter,
+  createServiceTokenSigner,
   loadConfigPolicy,
+  type WiredHttpSource,
 } from '@smallseedlabs/proba-context-adapters';
 import type { ContextServices } from './app.js';
 
@@ -26,14 +31,16 @@ export interface Runtime {
   identityMode: 'local_identity' | 'unconfigured';
   /** Where audit events go, for the start-up log. */
   auditSink: 'redis_stream' | 'log';
+  /** Which Phase-2 HTTP sources are wired. */
+  httpSources: WiredHttpSource[];
   close(): Promise<void>;
 }
 
 export type Env = Record<string, string | undefined>;
 
-function hostOf(url: string): string {
+function hostOf(url: string, defaultPort: string): string {
   const u = new URL(url);
-  return `${u.hostname}:${u.port || '6379'}`;
+  return `${u.hostname}:${u.port || defaultPort}`;
 }
 
 /**
@@ -45,6 +52,9 @@ function hostOf(url: string): string {
  *   `allowedDownstreamHosts`). Without it, a workstation run logs them; production refuses to start.
  * - Identity: a production process has no identity verification in this phase and answers 503 to
  *   context requests; the local identity resolver is only created outside production.
+ * - Phase-2 HTTP sources: memory/audit/analytics when `MEMORY_API_BASE_URL`, `AUDIT_API_BASE_URL`
+ *   and `CONTEXT_SERVICE_PRIVATE_KEY_FILE` are set; Hub task/conversation when `HUB_BASE_URL` and
+ *   the same private key are set.
  */
 export function createRuntime(env: Env, configPath: string): Runtime {
   const config = loadContextConfig(configPath);
@@ -59,7 +69,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
   let auditSink: Runtime['auditSink'];
   let closeAudit: () => Promise<void> = async () => undefined;
   if (env.REDIS_URL) {
-    const host = hostOf(env.REDIS_URL);
+    const host = hostOf(env.REDIS_URL, '6379');
     if (!config.allowedDownstreamHosts.includes(host)) {
       throw new ConfigError('REDIS_URL', [`host "${host}" is not in allowedDownstreamHosts`]);
     }
@@ -84,16 +94,79 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     ? new UnconfiguredIdentityResolver()
     : new LocalIdentityResolver(() => env.NODE_ENV);
 
+  const memoryBaseUrl = env.MEMORY_API_BASE_URL?.trim();
+  const auditBaseUrl = env.AUDIT_API_BASE_URL?.trim();
+  const hubBaseUrl = env.HUB_BASE_URL?.trim();
+  const privateKeyFile = env.CONTEXT_SERVICE_PRIVATE_KEY_FILE?.trim();
+
+  const wantMemoryAudit = Boolean(memoryBaseUrl && auditBaseUrl);
+  const wantHub = Boolean(hubBaseUrl);
+  let httpSources: WiredHttpSource[] = [];
+
+  if ((wantMemoryAudit || wantHub) && privateKeyFile) {
+    const material = loadPemServicePrivateKey(privateKeyFile, env.CONTEXT_SERVICE_KEY_ID);
+    const tokenSigner = createServiceTokenSigner({ material, clock });
+    const http = createHttpSources({
+      endpoints: {
+        ...(wantMemoryAudit && memoryBaseUrl && auditBaseUrl ? { memoryBaseUrl, auditBaseUrl } : {}),
+        ...(wantHub && hubBaseUrl ? { hubBaseUrl } : {}),
+      },
+      allowedHosts: config.allowedDownstreamHosts,
+      tokenSigner,
+    });
+    httpSources = http.wired;
+
+    return {
+      config,
+      identityMode: production ? 'unconfigured' : 'local_identity',
+      auditSink,
+      httpSources,
+      services: {
+        identity,
+        deps: {
+          config,
+          templates,
+          sources: createInProcessSources({
+            policy: policy.policy,
+            tools: policy.tools,
+            clock,
+            ...(http.memory ? { memory: http.memory } : {}),
+            ...(http.auditHistory ? { auditHistory: http.auditHistory } : {}),
+            ...(http.analytics ? { analytics: http.analytics } : {}),
+            ...(http.task ? { task: http.task } : {}),
+            ...(http.conversation ? { conversation: http.conversation } : {}),
+          }),
+          policyGuard: policy.guard,
+          tokenizer: new ApproximateTokenizer(),
+          clock,
+          audit,
+        },
+      },
+      close: closeAudit,
+    };
+  }
+
+  if ((wantMemoryAudit || wantHub) && !privateKeyFile) {
+    throw new ConfigError('CONTEXT_SERVICE_PRIVATE_KEY_FILE', [
+      'required when MEMORY_API_BASE_URL/AUDIT_API_BASE_URL or HUB_BASE_URL is set',
+    ]);
+  }
+
   return {
     config,
     identityMode: production ? 'unconfigured' : 'local_identity',
     auditSink,
+    httpSources,
     services: {
       identity,
       deps: {
         config,
         templates,
-        sources: createInProcessSources({ policy: policy.policy, tools: policy.tools, clock }),
+        sources: createInProcessSources({
+          policy: policy.policy,
+          tools: policy.tools,
+          clock,
+        }),
         policyGuard: policy.guard,
         tokenizer: new ApproximateTokenizer(),
         clock,
@@ -102,4 +175,19 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     },
     close: closeAudit,
   };
+}
+
+/** PEM-only loader for start-up (JWKS private material is supported via `loadServicePrivateKey` in tests). */
+function loadPemServicePrivateKey(filePath: string, kidEnv: string | undefined) {
+  const raw = readFileSync(filePath, 'utf8').trim();
+  if (raw.startsWith('{')) {
+    throw new Error(
+      'CONTEXT_SERVICE_PRIVATE_KEY_FILE at start-up must be an Ed25519 PEM private key (JWKS private material is supported in tests only).'
+    );
+  }
+  const key = createPrivateKey(raw);
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new Error('CONTEXT_SERVICE_PRIVATE_KEY_FILE must be an Ed25519 private key.');
+  }
+  return { kid: kidEnv?.trim() || 'bridge-key-1', key };
 }

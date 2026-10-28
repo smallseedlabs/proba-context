@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Phase 2 HTTP source adapters for memory-api (`MemoryHttpSource`), audit-api events/traces (`AuditHttpSource`), audit-api analytics (`AnalyticsHttpSource`), and Hub task/conversation (`TaskStateHttpSource`, `ConversationHttpSource`): service JWT (`CONTEXT_SERVICE_PRIVATE_KEY_FILE`), forwarded `X-Act-As`, per-call SSRF allow-list, timeouts via the pipeline, bounded retries with jitter, circuit breaker, response size caps, zod contract validation → `source_error` gaps, and scope canary tests against copied upstream fixtures in `docs/contracts/upstream/{audit,memory,hub}/`.
+- Hub adapters call `GET /v1/internal/goals/{goalId}/state` and `GET /v1/internal/threads/{threadId}/messages` when `HUB_BASE_URL` and the private key are set (replacing `IdentityTaskSource` / empty conversation on that path). Phase 3 identity (`POST /v1/internal/authorize`, assertion verification) is still pending.
 - Phase 1 core pipeline: `buildContext` (authorise, plan with typed needs, parallel fetch under per-source timeouts, scope re-filter, sanitise, priority budgeting, deterministic packet and hash, `context.*` audit events) in `packages/core`.
 - Redaction of secrets (always) and personal data (`redaction.pii`, default on), ported from proba-memory.
 - `policy.yaml` gains `restrictedTools` and `restrictedNeeds`; `loadTemplates` picks the highest template version per step type.
