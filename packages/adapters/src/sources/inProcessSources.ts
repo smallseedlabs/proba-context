@@ -13,9 +13,9 @@ import type {
 } from '@smallseedlabs/proba-context-core';
 
 /**
- * A source that holds no data and always answers with no items. Used for the sources whose backing services
- * (Hub thread, proba-memory, proba-audit, analytics) are not connected yet: the pipeline then reports
- * the gap the template calls for, for example `no_analytics_for_campaign`.
+ * A source that holds no data and always answers with no items. Used when an HTTP upstream is not
+ * configured: the pipeline then reports the gap the template calls for, for example
+ * `no_analytics_for_campaign`.
  */
 export class FixedEmptySource implements ConversationSource, MemorySource, AuditHistorySource, AnalyticsSource {
   async fetchRecent(): Promise<SourceResult> {
@@ -43,7 +43,7 @@ export class FixedEmptySource implements ConversationSource, MemorySource, Audit
 
 /**
  * Task state that comes from the verified identity alone: the goal and thread the caller acts in.
- * It carries no goal status or budget; a Hub-backed task source replaces it.
+ * It carries no goal status or budget; replaced by the Hub HTTP task source when `HUB_BASE_URL` is set.
  */
 export class IdentityTaskSource implements TaskStateSource {
   constructor(private readonly clock: Clock) {}
@@ -74,16 +74,15 @@ export interface InProcessSourcesOptions {
   auditHistory?: AuditHistorySource;
   /** When set (Phase 2), replaces the empty analytics source. */
   analytics?: AnalyticsSource;
-  /** Hub conversation source. Left empty until brief 05 Hub adapters land. */
+  /** When set (Phase 2 Hub), replaces the empty conversation source. */
   conversation?: ConversationSource;
-  /** Hub task source. Defaults to identity-only until Hub adapters land. */
+  /** When set (Phase 2 Hub), replaces the identity-only task source. */
   task?: TaskStateSource;
 }
 
 /**
- * Policy and tools from the config files, task state from the identity (unless overridden),
- * and either empty placeholders or the Phase-2 HTTP sources for memory / audit / analytics.
- * Conversation stays empty until Hub internal endpoints are available.
+ * Policy and tools from the config files; task/conversation/memory/audit/analytics from Phase-2
+ * HTTP adapters when wired, otherwise identity-only task and empty placeholders.
  */
 export function createInProcessSources(options: InProcessSourcesOptions): PipelineSources {
   const empty = new FixedEmptySource();

@@ -45,9 +45,17 @@ export function jsonResponse(status: number, body: unknown): Response {
 
 export function clientFor(
   baseUrl: string,
-  audience: 'proba-memory' | 'proba-audit',
+  audience: 'proba-memory' | 'proba-audit' | 'proba-hub',
   fetchImpl: FetchLike,
-  allowedHosts = ['127.0.0.1:9', 'proba-memory:3420', 'proba-audit:3400', 'memory.test', 'audit.test']
+  allowedHosts = [
+    '127.0.0.1:9',
+    'proba-memory:3420',
+    'proba-audit:3400',
+    'proba-hub:3300',
+    'memory.test',
+    'audit.test',
+    'hub.test',
+  ]
 ): DownstreamClient {
   return new DownstreamClient({
     name: audience,

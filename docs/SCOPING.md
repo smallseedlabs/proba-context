@@ -4,7 +4,10 @@ How every packet is scoped to the caller. Pipeline enforcement is described in [
 
 - **Workspace.** Taken from the identity, never from the request body. Every source query carries it, and items whose `data.workspaceId` differs are dropped after the fetch (`context.scope_violation`).
 - **User, goal, thread.** Taken from the identity and checked against the request: a mismatch fails the build with 403 `identity_mismatch`. Items whose `data.userId` differs are dropped after the fetch.
-- **Downstream reads (Phase 2).** HTTP adapters for memory-api and audit-api send `actorId` / `workspaceId` taken only from the verified identity, plus the bridge service JWT and the forwarded `X-Act-As`. Adapters drop canary rows that name another user or workspace before items reach the pipeline; the pipeline re-filters again.
+- **Downstream reads (Phase 2).** HTTP adapters for memory-api, audit-api and Hub send `actorId` / `workspaceId` (and `goalId` on Hub routes) taken only from the verified identity, plus the bridge service JWT (`aud` = target) and the forwarded `X-Act-As`. Adapters drop canary rows that name another user, workspace or thread before items reach the pipeline; the pipeline re-filters again.
+  - Memory: `POST /v1/memories/search`, `GET /v1/profiles`
+  - Audit / analytics: `GET /v1/events`, `GET /v1/traces/{id}`, analytics campaigns / summary / compare
+  - Hub: `GET /v1/internal/goals/{goalId}/state`, `GET /v1/internal/threads/{threadId}/messages`
 - **Downstream hosts.** Only hosts in `allowedDownstreamHosts` are called (SSRF guard on every request).
 - **Item trust.** Each item carries a trust level (`system`, `user`, `derived`, `external`); `external` content is never treated as an instruction. A source cannot raise trust above its section's ceiling (conversation: `user`; memory, audit history, analytics: `derived`).
 - **Local identity.** Unverified and for workstations and tests only; refused when `NODE_ENV=production`. May forward a supplied `X-Act-As` so HTTP sources can call upstream on a workstation.
@@ -12,5 +15,6 @@ How every packet is scoped to the caller. Pipeline enforcement is described in [
 
 ## To be defined (Phase 3)
 
-- Act-as assertion verification and Hub `POST /v1/internal/authorize`.
+- Act-as assertion verification (`aud` contains `proba-context`) and Hub `POST /v1/internal/authorize`.
 - Scope names and the sections each one grants.
+- Production removal of local identity from the real path (kept only behind `NODE_ENV!=production`).

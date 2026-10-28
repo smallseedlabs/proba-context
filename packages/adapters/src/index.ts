@@ -19,11 +19,17 @@ export {
 export { MemoryHttpSource, type MemoryHttpSourceOptions } from './sources/memoryHttpSource.js';
 export { AuditHttpSource, type AuditHttpSourceOptions } from './sources/auditHttpSource.js';
 export { AnalyticsHttpSource, type AnalyticsHttpSourceOptions } from './sources/analyticsHttpSource.js';
+export { TaskStateHttpSource, type TaskStateHttpSourceOptions } from './sources/taskStateHttpSource.js';
+export {
+  ConversationHttpSource,
+  type ConversationHttpSourceOptions,
+} from './sources/conversationHttpSource.js';
 export {
   createHttpSources,
   type CreateHttpSourcesOptions,
   type HttpSourceEndpoints,
   type HttpSources,
+  type WiredHttpSource,
 } from './sources/httpSources.js';
 export {
   DEFAULT_AUDIT_STREAM,

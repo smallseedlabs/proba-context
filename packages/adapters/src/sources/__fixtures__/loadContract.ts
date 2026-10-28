@@ -19,7 +19,7 @@ export type ContractFixture = {
   };
 };
 
-export function loadUpstreamContract(service: 'memory' | 'audit', name: string): ContractFixture {
+export function loadUpstreamContract(service: 'memory' | 'audit' | 'hub', name: string): ContractFixture {
   const path = join(repoRoot, 'docs/contracts/upstream', service, `${name}.json`);
   return JSON.parse(readFileSync(path, 'utf8')) as ContractFixture;
 }

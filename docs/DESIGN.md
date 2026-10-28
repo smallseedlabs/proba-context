@@ -102,8 +102,8 @@ Empty sources other than analytics are not gaps: no memory is a normal state. Ga
 |---------|---------|-------|
 | policy | `ConfigPolicySource` | `config/policy.yaml`, statements filtered by `appliesTo` |
 | tools | `ConfigToolCatalogSource` | `config/tools.yaml` filtered by `appliesTo`, minus `restrictedTools` for the step |
-| task | `IdentityTaskSource` | the goal and thread from the identity only; Hub task source waits on brief 05 |
-| conversation | `FixedEmptySource` | Hub conversation source waits on brief 05 |
+| task | `TaskStateHttpSource` when `HUB_BASE_URL` + key are set; else `IdentityTaskSource` | Hub `GET /v1/internal/goals/{goalId}/state` |
+| conversation | `ConversationHttpSource` when `HUB_BASE_URL` + key are set; else empty | Hub `GET /v1/internal/threads/{threadId}/messages` |
 | memory | `MemoryHttpSource` when env URLs + key are set; else empty | `POST /v1/memories/search`, `GET /v1/profiles` |
 | audit_history | `AuditHttpSource` when env URLs + key are set; else empty | `GET /v1/events`, `GET /v1/traces/{id}` |
 | analytics | `AnalyticsHttpSource` (same audit base URL); else empty | `GET /v1/analytics/campaigns`, `/summary`, `/compare` |
