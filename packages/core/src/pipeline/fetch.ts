@@ -1,0 +1,63 @@
+import type { ContextItem } from '../protocol.js';
+import { contextItemSchema } from '../protocol.js';
+import type { Clock, SourceQuery } from '../ports/index.js';
+import type { FetchJob } from './plan.js';
+
+export type FetchStatus = 'ok' | 'timeout' | 'error';
+
+export interface FetchOutcome {
+  job: FetchJob;
+  status: FetchStatus;
+  /** Items the source returned that are valid context items. */
+  items: ContextItem[];
+  /** Items the source returned in total, valid or not. */
+  returned: number;
+  latencyMs: number;
+  timeoutMs: number;
+}
+
+class SourceTimeout extends Error {}
+
+/**
+ * Step 3, one source: call it under its timeout. Never throws: a source that fails or runs out of time
+ * yields an outcome with no items and a status the caller turns into a gap.
+ */
+export async function runJob(
+  job: FetchJob,
+  query: Omit<SourceQuery, 'signal'>,
+  timeoutMs: number,
+  clock: Clock
+): Promise<FetchOutcome> {
+  const startedAt = clock.now().getTime();
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new SourceTimeout());
+    }, timeoutMs);
+  });
+  const finish = (status: FetchStatus, raw: readonly unknown[] = []): FetchOutcome => {
+    const items = raw.flatMap((candidate) => {
+      const parsed = contextItemSchema.safeParse(candidate);
+      return parsed.success ? [parsed.data as ContextItem] : [];
+    });
+    return {
+      job,
+      status,
+      items,
+      returned: raw.length,
+      latencyMs: Math.max(0, clock.now().getTime() - startedAt),
+      timeoutMs,
+    };
+  };
+  try {
+    const result = await Promise.race([job.run({ ...query, signal: controller.signal }), timeout]);
+    if (!result || !Array.isArray(result.items)) return finish('error');
+    return finish('ok', result.items);
+  } catch (err) {
+    return finish(err instanceof SourceTimeout ? 'timeout' : 'error');
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
