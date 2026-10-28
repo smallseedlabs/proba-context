@@ -1,0 +1,27 @@
+# Local stack for proba-context.
+#   export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=...   (or put them in an untracked .env)
+#   docker compose up --build
+# Every published port is bound to 127.0.0.1 and no secret has a default: Compose refuses to start until
+# each ${NAME:?...} variable is set. scripts/check-compose-security.mjs enforces both in CI.
+services:
+  context-api:
+    build:
+      context: .
+      target: context-api
+    image: proba-context-api:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3500:3500"
+    environment:
+      NODE_ENV: production
+      PORT: "3500"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CONTEXT_CONFIG_PATH: /app/config/context.config.yaml
+      # Credentials for the downstream services named in allowedDownstreamHosts.
+      AUDIT_API_TOKEN: ${AUDIT_API_TOKEN:?set AUDIT_API_TOKEN}
+      MEMORY_API_TOKEN: ${MEMORY_API_TOKEN:?set MEMORY_API_TOKEN}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

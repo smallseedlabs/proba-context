@@ -1,0 +1,15 @@
+# Template for the review_performance step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: review_performance
+description: Review how running campaigns are performing.
+sections:
+  - kind: policy
+    required: true
+  - kind: task
+    required: true
+  - kind: analytics
+    required: true
+  - kind: memory
+    required: false
+  - kind: conversation
+    required: false

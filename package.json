@@ -1,0 +1,46 @@
+{
+  "name": "@smallseedlabs/proba-context",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Proba context service: builds bounded, auditable context packets for the brain (monorepo)",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "typecheck": "tsc -p tsconfig.check.json --noEmit",
+    "lint": "eslint packages apps --ext .ts --max-warnings 0",
+    "test": "NODE_ENV=test vitest run",
+    "test:watch": "NODE_ENV=test vitest",
+    "watch:api": "tsx watch apps/context-api/src/index.ts",
+    "compose:check": "node scripts/check-compose-security.mjs",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "keywords": [
+    "proba",
+    "context",
+    "brain",
+    "audit"
+  ],
+  "author": "Small Seed Labs",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.14.15",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.0",
+    "js-yaml": "^4.1.0",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

@@ -1,0 +1,11 @@
+title = "proba-context gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentional fake values in tests and docs examples"
+paths = [
+  '''.*\.test\.ts$''',
+  '''(^|/)README\.md$''',
+]

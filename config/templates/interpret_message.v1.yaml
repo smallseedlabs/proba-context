@@ -1,0 +1,15 @@
+# Template for the interpret_message step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: interpret_message
+description: Understand what the user just said in light of the thread and the current goal.
+sections:
+  - kind: policy
+    required: true
+  - kind: conversation
+    required: true
+  - kind: task
+    required: false
+  - kind: memory
+    required: false
+  - kind: tools
+    required: false

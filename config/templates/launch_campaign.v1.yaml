@@ -1,0 +1,13 @@
+# Template for the launch_campaign step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: launch_campaign
+description: Launch an approved campaign.
+sections:
+  - kind: policy
+    required: true
+  - kind: task
+    required: true
+  - kind: audit_history
+    required: false
+  - kind: tools
+    required: true

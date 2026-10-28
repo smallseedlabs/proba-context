@@ -1,0 +1,69 @@
+# proba-context configuration. Validated at start-up; the service refuses to start on an invalid file.
+# Reference: docs/CONFIG.md
+version: "1"
+
+identity:
+  # act_as_assertion: verify the Hub-minted X-Act-As assertion.
+  # firebase_passthrough: verify the caller's Firebase ID token.
+  mode: act_as_assertion
+
+# One entry per section kind. tokenShare of the enabled sources must add up to at most 1.
+sources:
+  policy:
+    enabled: true
+    timeoutMs: 500
+    tokenShare: 0.10
+  task:
+    enabled: true
+    timeoutMs: 1000
+    tokenShare: 0.15
+  conversation:
+    enabled: true
+    timeoutMs: 1000
+    tokenShare: 0.30
+  memory:
+    enabled: true
+    timeoutMs: 1500
+    tokenShare: 0.15
+  audit_history:
+    enabled: true
+    timeoutMs: 1500
+    tokenShare: 0.10
+  analytics:
+    enabled: true
+    timeoutMs: 2000
+    tokenShare: 0.10
+  tools:
+    enabled: true
+    timeoutMs: 500
+    tokenShare: 0.10
+
+# Packets are built fresh for every request unless the cache is switched on.
+cache:
+  enabled: false
+  ttlSeconds: 0
+  maxEntries: 1000
+
+budget:
+  defaultTokens: 6000
+  maxTokens: 12000
+  # Lower numbers are kept first when the budget is tight.
+  priorities:
+    policy: 0
+    task: 1
+    conversation: 2
+    memory: 3
+    audit_history: 4
+    analytics: 5
+    tools: 6
+
+# Hosts (host or host:port) the service may call. Everything else is refused.
+allowedDownstreamHosts:
+  - proba-audit:3100
+  - proba-memory:3200
+
+limits:
+  maxNeedsPerRequest: 20
+  maxItemsPerSource: 50
+  maxItemChars: 4000
+  maxRequestBytes: 65536

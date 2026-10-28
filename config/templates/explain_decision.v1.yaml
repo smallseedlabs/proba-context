@@ -1,0 +1,15 @@
+# Template for the explain_decision step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: explain_decision
+description: Explain why an earlier decision was made, citing the trail.
+sections:
+  - kind: policy
+    required: true
+  - kind: task
+    required: false
+  - kind: audit_history
+    required: true
+  - kind: conversation
+    required: false
+  - kind: memory
+    required: false

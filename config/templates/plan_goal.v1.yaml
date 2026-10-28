@@ -1,0 +1,19 @@
+# Template for the plan_goal step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: plan_goal
+description: Turn the user's intent into a goal and a plan.
+sections:
+  - kind: policy
+    required: true
+  - kind: conversation
+    required: true
+  - kind: task
+    required: false
+  - kind: memory
+    required: true
+  - kind: analytics
+    required: false
+  - kind: audit_history
+    required: false
+  - kind: tools
+    required: true
