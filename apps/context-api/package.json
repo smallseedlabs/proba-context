@@ -1,0 +1,17 @@
+{
+  "name": "@smallseedlabs/proba-context-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "proba-context: context-api process (HTTP API)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "license": "Apache-2.0",
+  "scripts": {
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@smallseedlabs/proba-context-adapters": "*",
+    "@smallseedlabs/proba-context-core": "*",
+    "fastify": "^5.2.0"
+  }
+}
