@@ -6,17 +6,17 @@ The request and packet shapes (`ContextRequest`, `ContextPacket`) come from [`@s
 
 ## Status
 
-Phase 0 (scaffold). The service starts, validates its configuration and answers `GET /health`. The context endpoint, source adapters and packet assembly arrive in later phases (see [docs/DESIGN.md](docs/DESIGN.md)).
+Phase 1 (core pipeline). `POST /v1/context/build` builds a packet from the template, typed needs, the config-file policy and tool catalog, and the caller's identity, with redaction, scope filtering, budgeting, a deterministic `packetHash` and `context.*` audit events on a Redis stream. The conversation, memory, audit history and analytics sources are not connected yet and return nothing, so those sections are empty and analytics reports a gap. Production has no identity verification yet and refuses context requests (see [docs/DESIGN.md](docs/DESIGN.md)).
 
 ## Layout
 
 | Path | Contents |
 |------|----------|
-| `packages/core` | `@smallseedlabs/proba-context-core`: ports, config schema and loader, templates schema, `packetHash`, protocol re-exports |
-| `packages/adapters` | `@smallseedlabs/proba-context-adapters`: implementations of the ports (empty until Phase 1) |
+| `packages/core` | `@smallseedlabs/proba-context-core`: ports, config schema and loader, redaction, the build pipeline, `packetHash`, protocol re-exports |
+| `packages/adapters` | `@smallseedlabs/proba-context-adapters`: config-file policy and tools, tokenizer, clock, Redis stream audit emitter, local identity |
 | `apps/context-api` | Fastify service, port 3500 |
 | `config/` | `context.config.yaml`, `policy.yaml`, `tools.yaml`, and `templates/` (one versioned file per step type) |
-| `docs/` | [DESIGN](docs/DESIGN.md), [CONFIG](docs/CONFIG.md), [SCOPING](docs/SCOPING.md), [RUNBOOK](docs/RUNBOOK.md) |
+| `docs/` | [DESIGN](docs/DESIGN.md), [WALKTHROUGH_RAISE_BUDGET](docs/WALKTHROUGH_RAISE_BUDGET.md), [CONFIG](docs/CONFIG.md), [SCOPING](docs/SCOPING.md), [RUNBOOK](docs/RUNBOOK.md) |
 | `scripts/` | `check-compose-security.mjs` |
 
 ## Run
@@ -29,10 +29,12 @@ npm run build
 npm run watch:api          # http://127.0.0.1:3500, reads config/context.config.yaml
 ```
 
+Outside production the service accepts a local identity (`Authorization: Bearer local:<userId>:<workspaceId>:<goalId>:<threadId>`) and prints audit events instead of writing them to Redis unless `REDIS_URL` is set.
+
 With Docker (Compose refuses to start until the credentials are set; the port is published on `127.0.0.1` only):
 
 ```bash
-export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=...
+export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=... REDIS_PASSWORD=...
 docker compose up --build -d
 curl http://127.0.0.1:3500/health
 ```
@@ -46,6 +48,8 @@ curl http://127.0.0.1:3500/health
 | Method | Path | Response |
 |--------|------|----------|
 | GET | `/health` | `{ "status": "ok", "service": "context-api" }` |
+| POST | `/v1/context/build` | `ContextRequest` in, `ContextPacket` out |
+| GET | `/v1/context/needs?stepType=` | Need kinds the brain may ask for in that step |
 
 ## Configuration
 
@@ -57,7 +61,9 @@ curl http://127.0.0.1:3500/health
 | `HOST` | `0.0.0.0` | Listen address (inside the container) |
 | `LOG_LEVEL` | `info` | Log level |
 | `CONTEXT_CONFIG_PATH` | `config/context.config.yaml` | Config file |
-| `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN` | none | Downstream credentials, required by Compose |
+| `NODE_ENV` | unset (`production` in the container) | `production` refuses local identities and requires `REDIS_URL` |
+| `REDIS_URL` | none | Redis for the audit stream `proba.audit.events` |
+| `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN`, `REDIS_PASSWORD` | none | Required by Compose |
 
 ## Develop
 

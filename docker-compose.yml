@@ -32,8 +32,10 @@ services:
 
   # Audit stream broker. Not published on the host; only context-api reaches it, over the Compose network.
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
     restart: unless-stopped
+    # Run as the image's redis user directly: with every capability dropped the entrypoint cannot switch users.
+    user: "999:1000"
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}", "--save", "", "--appendonly", "no"]
     read_only: true
     cap_drop:

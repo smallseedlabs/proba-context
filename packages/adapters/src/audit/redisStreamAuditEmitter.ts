@@ -74,8 +74,11 @@ export interface RedisConnectionOptions {
 /** Connects to Redis and returns an emitter on the audit stream. */
 export function createRedisStreamAuditEmitter(options: RedisConnectionOptions): RedisStreamAuditEmitter {
   const client = new Redis(options.url, {
-    maxRetriesPerRequest: 2,
-    enableOfflineQueue: false,
+    // Commands wait for the connection (so the first event after start-up is not lost) but never for long:
+    // an unreachable Redis fails the emit, and the build fails closed.
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+    commandTimeout: 2000,
     ...options.redis,
   });
   // Connection errors surface on the next emit; without a listener ioredis would also print them.
