@@ -26,6 +26,8 @@ export interface Clock {
 
 /** Credentials as received on the inbound request. */
 export interface IdentityCredentials {
+  /** Value of the `X-Local-Identity` header (JSON). Only the local identity resolver reads it. */
+  localIdentity?: string;
   /** Value of the `X-Act-As` header (an act-as assertion JWT). */
   actAsAssertion?: string;
   /** Value of the `Authorization` header (a Firebase ID token). */

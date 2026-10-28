@@ -4,6 +4,7 @@
  */
 export type {
   ActAsAssertionClaims,
+  AuditEvent,
   AuditEventInput,
   BrainContextAttachedDetails,
   ContextAuditDetails,
@@ -24,7 +25,11 @@ export {
   ACT_AS_ASSERTION_MAX_TTL_SECONDS,
   KNOWN_GAP_CODES,
   actAsAssertionClaimsSchema,
+  auditEventSchema,
   brainContextAttachedDetailsSchema,
+  buildAuditEvent,
+  generateSpanId,
+  getAuditActionInfo,
   contextAuditDetailsSchema,
   contextItemSchema,
   contextNeedSchema,
@@ -35,6 +40,7 @@ export {
   sectionKindSchema,
   stepTypeSchema,
   validateActAsAssertionClaims,
+  validateAuditEvent,
   validateContextNeed,
   validateContextPacket,
   validateContextRequest,

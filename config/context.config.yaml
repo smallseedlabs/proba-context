@@ -61,9 +61,15 @@ budget:
 allowedDownstreamHosts:
   - proba-audit:3100
   - proba-memory:3200
+  # Redis, where the audit stream lives (REDIS_URL must point here).
+  - redis:6379
 
 limits:
   maxNeedsPerRequest: 20
   maxItemsPerSource: 50
   maxItemChars: 4000
   maxRequestBytes: 65536
+
+redaction:
+  # Secrets are always redacted. pii also redacts email, phone, card (Luhn), IBAN and SSN.
+  pii: true

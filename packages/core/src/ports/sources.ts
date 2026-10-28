@@ -32,6 +32,8 @@ export interface AuditHistorySource {
 
 /** Campaign analytics (the `analytics_compare` need). */
 export interface AnalyticsSource {
+  /** Recent metrics for the goal's campaigns, with no explicit need. Empty when the goal has none. */
+  overview(query: SourceQuery, limit: number): Promise<SourceResult>;
   compare(query: SourceQuery, need: AnalyticsCompareNeed): Promise<SourceResult>;
 }
 
