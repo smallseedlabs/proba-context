@@ -1,6 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import yaml from 'js-yaml';
 import type { ZodType, ZodTypeDef } from 'zod';
+import type { StepType } from '@smallseedlabs/proba-protocol';
 import {
   contextConfigSchema,
   policyFileSchema,
@@ -75,6 +77,32 @@ export function parseTemplate(raw: unknown, source = '(inline template)'): Templ
 
 export function loadTemplate(path: string): Template {
   return parseTemplate(readYamlFile(path), path);
+}
+
+/**
+ * Loads every `<stepType>.v<N>.yaml` template in a directory and keeps, per step type, the highest version.
+ * A file whose name disagrees with its `stepType` is rejected.
+ */
+export function loadTemplates(dir: string): Map<StepType, Template> {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((name) => /\.v\d+\.ya?ml$/.test(name)).sort();
+  } catch (err) {
+    throw new ConfigError(dir, [`cannot read directory: ${err instanceof Error ? err.message : String(err)}`]);
+  }
+  const best = new Map<StepType, { version: number; template: Template }>();
+  for (const name of names) {
+    const path = join(dir, name);
+    const template = loadTemplate(path);
+    const match = /^(.+)\.v(\d+)\.ya?ml$/.exec(name);
+    if (!match || match[1] !== template.stepType) {
+      throw new ConfigError(path, [`file name must be "${template.stepType}.v<N>.yaml"`]);
+    }
+    const version = Number(match[2]);
+    const current = best.get(template.stepType);
+    if (!current || version > current.version) best.set(template.stepType, { version, template });
+  }
+  return new Map([...best].map(([stepType, { template }]) => [stepType, template]));
 }
 
 export function loadPolicyFile(path: string): PolicyFile {

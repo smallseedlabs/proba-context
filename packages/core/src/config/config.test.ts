@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- test helpers mutate loosely typed config objects */
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +10,7 @@ import {
   loadContextConfig,
   loadPolicyFile,
   loadTemplate,
+  loadTemplates,
   loadToolsFile,
   parseContextConfig,
   parseTemplate,
@@ -167,5 +169,63 @@ describe('templates', () => {
 
   it('rejects a file that is not a template', () => {
     expect(() => loadTemplate(join(configDir, 'policy.yaml'))).toThrow(ConfigError);
+  });
+});
+
+describe('loadTemplates', () => {
+  const templatesDir = join(configDir, 'templates');
+
+  it('loads one template per step type from the shipped directory', () => {
+    const templates = loadTemplates(templatesDir);
+    expect([...templates.keys()].sort()).toEqual([...stepTypeSchema.options].sort());
+  });
+
+  it('keeps the highest version of a step type', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'templates-'));
+    const v1 = readFileSync(join(templatesDir, 'clarify.v1.yaml'), 'utf8');
+    writeFileSync(join(dir, 'clarify.v1.yaml'), v1);
+    writeFileSync(join(dir, 'clarify.v2.yaml'), v1.replace('templateVersion: "1"', 'templateVersion: "2"'));
+    expect(loadTemplates(dir).get('clarify')?.templateVersion).toBe('2');
+  });
+
+  it('rejects a file whose name disagrees with its step type', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'templates-'));
+    writeFileSync(join(dir, 'plan_goal.v1.yaml'), readFileSync(join(templatesDir, 'clarify.v1.yaml'), 'utf8'));
+    expect(() => loadTemplates(dir)).toThrow(/file name must be "clarify.v<N>.yaml"/);
+  });
+
+  it('names the directory when it cannot be read', () => {
+    expect(() => loadTemplates(join(configDir, 'missing'))).toThrow(ConfigError);
+  });
+});
+
+describe('policy restrictions and redaction config', () => {
+  it('reads restrictedTools and restrictedNeeds from the shipped policy', () => {
+    const policy = loadPolicyFile(join(configDir, 'policy.yaml'));
+    expect(policy.restrictedTools.map((r) => r.name)).toContain('launch_campaign');
+    expect(policy.restrictedNeeds.map((r) => r.kind)).toContain('audit_trace');
+  });
+
+  it('defaults the restrictions to none', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'policy-'));
+    writeFileSync(join(dir, 'p.yaml'), 'version: "1"\nstatements:\n  - id: a\n    text: b\n    appliesTo: [clarify]\n');
+    const policy = loadPolicyFile(join(dir, 'p.yaml'));
+    expect(policy.restrictedTools).toEqual([]);
+    expect(policy.restrictedNeeds).toEqual([]);
+  });
+
+  it('rejects an unknown need kind in restrictedNeeds', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'policy-'));
+    writeFileSync(
+      join(dir, 'p.yaml'),
+      'version: "1"\nstatements:\n  - id: a\n    text: b\n    appliesTo: [clarify]\nrestrictedNeeds:\n  - kind: free_text\n    appliesTo: [clarify]\n    reason: x\n'
+    );
+    expect(() => loadPolicyFile(join(dir, 'p.yaml'))).toThrow(/kind/);
+  });
+
+  it('redacts personal data by default', () => {
+    const config = loadContextConfig(join(configDir, 'context.config.yaml')) as unknown as Record<string, unknown>;
+    const { redaction: _omit, ...rest } = config;
+    expect(parseContextConfig(rest).redaction.pii).toBe(true);
   });
 });

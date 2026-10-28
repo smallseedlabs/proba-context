@@ -1,5 +1,5 @@
 # Local stack for proba-context.
-#   export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=...   (or put them in an untracked .env)
+#   export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=... REDIS_PASSWORD=...   (or put them in an untracked .env)
 #   docker compose up --build
 # Every published port is bound to 127.0.0.1 and no secret has a default: Compose refuses to start until
 # each ${NAME:?...} variable is set. scripts/check-compose-security.mjs enforces both in CI.
@@ -20,6 +20,23 @@ services:
       # Credentials for the downstream services named in allowedDownstreamHosts.
       AUDIT_API_TOKEN: ${AUDIT_API_TOKEN:?set AUDIT_API_TOKEN}
       MEMORY_API_TOKEN: ${MEMORY_API_TOKEN:?set MEMORY_API_TOKEN}
+      # Audit events go to the Redis stream proba.audit.events.
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+    depends_on:
+      - redis
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Audit stream broker. Not published on the host; only context-api reaches it, over the Compose network.
+  redis:
+    image: redis:7-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    restart: unless-stopped
+    # Run as the image's redis user directly: with every capability dropped the entrypoint cannot switch users.
+    user: "999:1000"
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}", "--save", "", "--appendonly", "no"]
     read_only: true
     cap_drop:
       - ALL

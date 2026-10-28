@@ -17,3 +17,5 @@ export type {
   IdentityResolver,
   Tokenizer,
 } from './infrastructure.js';
+export type { NeedDecision, PolicyGuard } from './policyGuard.js';
+export { IdentityRejectedError } from './errors.js';

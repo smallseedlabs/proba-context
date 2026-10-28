@@ -7,3 +7,16 @@ statements:
   - id: no-invented-metrics
     text: Report only metrics present in the context. When a metric is missing, say so and ask.
     appliesTo: [review_performance, explain_decision]
+# Tools that must never reach the brain in these steps, even if tools.yaml lists them for the step.
+restrictedTools:
+  - name: launch_campaign
+    appliesTo: [interpret_message, clarify, plan_goal, propose_budget, handle_approval, review_performance, explain_decision]
+    reason: Campaigns launch only in the launch_campaign step, after the user has approved.
+# Need kinds the brain may not ask for in these steps.
+restrictedNeeds:
+  - kind: audit_trace
+    appliesTo: [interpret_message, clarify, plan_goal, propose_budget, handle_approval, launch_campaign]
+    reason: Audit traces are only available when reviewing or explaining a decision.
+  - kind: analytics_compare
+    appliesTo: [interpret_message, clarify, handle_approval, launch_campaign]
+    reason: Metric comparisons are not needed to interpret, clarify, approve or launch.

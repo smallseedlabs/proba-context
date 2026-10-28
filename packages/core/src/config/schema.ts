@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { sectionKindSchema, stepTypeSchema } from '@smallseedlabs/proba-protocol';
 
+/** Kinds of typed needs the protocol defines. */
+export const NEED_KINDS = ['memory_search', 'analytics_compare', 'audit_trace', 'conversation_before'] as const;
+export type NeedKind = (typeof NEED_KINDS)[number];
+
 /** Section kinds double as source names: one source feeds one section. */
 export const SOURCE_NAMES = sectionKindSchema.options;
 
@@ -78,6 +82,15 @@ export const identityConfigSchema = z
   })
   .strict();
 
+export const redactionConfigSchema = z
+  .object({
+    /** Also redact personal data (email, phone, card, IBAN, SSN). Secrets are always redacted. */
+    pii: z.boolean().default(true),
+  })
+  .strict();
+
+export type RedactionConfig = z.infer<typeof redactionConfigSchema>;
+
 export const contextConfigSchema = z
   .object({
     version: z.string().min(1),
@@ -88,6 +101,7 @@ export const contextConfigSchema = z
     /** Hosts the service may call (proba-audit, proba-memory, ...). Everything else is refused. */
     allowedDownstreamHosts: z.array(hostSchema).max(32),
     limits: limitsConfigSchema.default({}),
+    redaction: redactionConfigSchema.default({}),
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -150,6 +164,30 @@ export const policyFileSchema = z
           .strict()
       )
       .min(1),
+    /** Tools that must never be described to the brain in the listed steps, whatever tools.yaml says. */
+    restrictedTools: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[a-z][a-z0-9_]*$/, 'must be lower-case snake_case'),
+            appliesTo: z.array(stepTypeSchema).min(1),
+            reason: z.string().min(1),
+          })
+          .strict()
+      )
+      .default([]),
+    /** Need kinds the brain may not ask for in the listed steps. */
+    restrictedNeeds: z
+      .array(
+        z
+          .object({
+            kind: z.enum(NEED_KINDS),
+            appliesTo: z.array(stepTypeSchema).min(1),
+            reason: z.string().min(1),
+          })
+          .strict()
+      )
+      .default([]),
   })
   .strict();
 
