@@ -1,0 +1,21 @@
+{
+  "name": "@smallseedlabs/proba-context-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ports, config schema and loader, and packet hashing for proba-context",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@smallseedlabs/proba-protocol": "github:smallseedlabs/proba-protocol#v0.4.0",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.23.8"
+  }
+}

@@ -1,0 +1,11 @@
+# Tools described to the brain in the "tools" section. Validated by the tools file schema.
+version: "1"
+tools:
+  - name: propose_budget
+    description: Propose a daily budget for the current goal. The proposal is not applied until the user approves it.
+    risk: low
+    appliesTo: [propose_budget]
+  - name: launch_campaign
+    description: Launch an approved campaign on the connected ad platform.
+    risk: high
+    appliesTo: [launch_campaign]

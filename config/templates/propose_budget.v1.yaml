@@ -1,0 +1,17 @@
+# Template for the propose_budget step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: propose_budget
+description: Propose a budget for the goal within policy.
+sections:
+  - kind: policy
+    required: true
+  - kind: task
+    required: true
+  - kind: conversation
+    required: false
+  - kind: memory
+    required: false
+  - kind: analytics
+    required: false
+  - kind: tools
+    required: true

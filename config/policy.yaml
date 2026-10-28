@@ -1,0 +1,9 @@
+# Policy statements served to the brain as the "policy" section. Validated by the policy file schema.
+version: "1"
+statements:
+  - id: spend-approval
+    text: Spend above 100 GBP per day needs explicit user approval before a campaign is launched.
+    appliesTo: [propose_budget, handle_approval, launch_campaign]
+  - id: no-invented-metrics
+    text: Report only metrics present in the context. When a metric is missing, say so and ask.
+    appliesTo: [review_performance, explain_decision]

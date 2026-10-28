@@ -1,0 +1,13 @@
+# Template for the handle_approval step. Versioned: bump templateVersion when the section list changes.
+templateVersion: "1"
+stepType: handle_approval
+description: Act on the user's approval or rejection of a proposal.
+sections:
+  - kind: policy
+    required: true
+  - kind: task
+    required: true
+  - kind: conversation
+    required: true
+  - kind: audit_history
+    required: false
