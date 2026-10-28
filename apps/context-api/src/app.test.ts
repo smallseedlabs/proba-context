@@ -8,7 +8,15 @@ import {
   type AuditEventInput,
   type ContextPacket,
 } from '@smallseedlabs/proba-context-core';
-import { UnconfiguredIdentityResolver } from '@smallseedlabs/proba-context-adapters';
+import {
+  MemoryJtiStore,
+  MemoryPacketStore,
+  MemoryRateLimiter,
+  MemoryRateLimiterRefusedError,
+  MemoryJtiStoreRefusedError,
+  MemoryPacketStoreRefusedError,
+  UnconfiguredIdentityResolver,
+} from '@smallseedlabs/proba-context-adapters';
 import { buildApp, type ContextServices } from './app.js';
 import { createRuntime } from './runtime.js';
 
@@ -41,7 +49,7 @@ class RecordingEmitter implements AuditEmitter {
 }
 
 function servicesWithRecorder(): { services: ContextServices; audit: RecordingEmitter } {
-  const runtime = createRuntime({ NODE_ENV: 'test' }, configPath);
+  const runtime = createRuntime({ NODE_ENV: 'test', CONTEXT_ALLOW_LOCAL_IDENTITY: 'true' }, configPath);
   const audit = new RecordingEmitter();
   return { services: { ...runtime.services, deps: { ...runtime.services.deps, audit } }, audit };
 }
@@ -52,6 +60,7 @@ describe('GET /health', () => {
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ok', service: 'context-api' });
+    expect(res.headers['cache-control']).toBe('no-store');
     await app.close();
   });
 
@@ -75,6 +84,7 @@ describe('POST /v1/context/build', () => {
     const app = await buildApp({}, services);
     const res = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: bearer }, payload: body() });
     expect(res.statusCode).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
     const packet = res.json<ContextPacket>();
     expect(validateContextPacket(packet).success).toBe(true);
     expect(packet.sections.map((s) => s.kind)).toEqual(['policy', 'task', 'tools']);
@@ -105,10 +115,12 @@ describe('POST /v1/context/build', () => {
   });
 
   it('answers 401 without an identity and 401 for a malformed one', async () => {
-    const app = await buildApp({}, servicesWithRecorder().services);
+    const { services, audit } = servicesWithRecorder();
+    const app = await buildApp({}, services);
     const none = await app.inject({ method: 'POST', url: '/v1/context/build', payload: body() });
     expect(none.statusCode).toBe(401);
     expect(none.json()).toEqual({ error: { code: 'identity_missing', message: expect.any(String) } });
+    expect(audit.events.some((e) => e.action === 'auth.denied')).toBe(true);
     const bad = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: 'Bearer local:a:b' }, payload: body() });
     expect(bad.statusCode).toBe(401);
     await app.close();
@@ -125,7 +137,7 @@ describe('POST /v1/context/build', () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('identity_mismatch');
-    expect(audit.events.map((e) => e.action)).toEqual(['context.requested', 'context.build_failed']);
+    expect(audit.events.map((e) => e.action)).toEqual(['context.requested', 'context.build_failed', 'auth.denied']);
     expect(audit.events[1]?.outcome).toBe('denied');
     await app.close();
   });
@@ -197,12 +209,10 @@ describe('production refuses local identity', () => {
     await app.close();
   });
 
-  it('createRuntime wires the unconfigured resolver when NODE_ENV=production', async () => {
-    const runtime = createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://redis:6379' }, configPath);
-    expect(runtime.identityMode).toBe('unconfigured');
-    expect(runtime.auditSink).toBe('redis_stream');
-    await expect(runtime.services.identity.resolve({ authorization: bearer })).rejects.toMatchObject({ code: 'identity_unconfigured' });
-    await runtime.close();
+  it('createRuntime refuses to start in production without assertion keys', () => {
+    expect(() => createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://redis:6379' }, configPath)).toThrow(
+      /HUB_ASSERTION_PUBLIC_KEY_FILE/
+    );
   });
 
   it('createRuntime refuses to start in production without a Redis audit stream', () => {
@@ -210,14 +220,25 @@ describe('production refuses local identity', () => {
   });
 
   it('createRuntime refuses a Redis host that is not in allowedDownstreamHosts', () => {
-    expect(() => createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://elsewhere:6379' }, configPath)).toThrow(/allowedDownstreamHosts/);
+    expect(() => createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://elsewhere:6379' }, configPath)).toThrow(
+      /allowedDownstreamHosts/
+    );
   });
 
-  it('outside production createRuntime uses the local identity and the log emitter', () => {
-    const runtime = createRuntime({ NODE_ENV: 'test' }, configPath);
-    expect(runtime.identityMode).toBe('local_identity');
-    expect(runtime.auditSink).toBe('log');
-    expect(runtime.httpSources).toEqual([]);
+  it('outside production createRuntime uses local identity only when the flag is set', () => {
+    const withFlag = createRuntime({ NODE_ENV: 'test', CONTEXT_ALLOW_LOCAL_IDENTITY: 'true' }, configPath);
+    expect(withFlag.identityMode).toBe('local_identity');
+    expect(withFlag.auditSink).toBe('log');
+    expect(withFlag.httpSources).toEqual([]);
+
+    const without = createRuntime({ NODE_ENV: 'test' }, configPath);
+    expect(without.identityMode).toBe('unconfigured');
+  });
+
+  it('refuses memory rate limiter, jti store and packet store in production', () => {
+    expect(() => new MemoryRateLimiter(undefined, 'production')).toThrow(MemoryRateLimiterRefusedError);
+    expect(() => new MemoryJtiStore(undefined, 'production')).toThrow(MemoryJtiStoreRefusedError);
+    expect(() => new MemoryPacketStore('production')).toThrow(MemoryPacketStoreRefusedError);
   });
 });
 
@@ -231,7 +252,12 @@ describe('GET /v1/context/needs', () => {
       allowedNeeds: ['memory_search', 'analytics_compare', 'conversation_before'],
       maxNeedsPerRequest: 20,
     });
-    expect((await get('explain_decision')).json().allowedNeeds).toEqual(['memory_search', 'analytics_compare', 'audit_trace', 'conversation_before']);
+    expect((await get('explain_decision')).json().allowedNeeds).toEqual([
+      'memory_search',
+      'analytics_compare',
+      'audit_trace',
+      'conversation_before',
+    ]);
     expect((await get('launch_campaign')).json().allowedNeeds).toEqual(['memory_search', 'conversation_before']);
     await app.close();
   });
@@ -239,7 +265,9 @@ describe('GET /v1/context/needs', () => {
   it('answers 400 for a missing or unknown stepType and 401 without an identity', async () => {
     const app = await buildApp({}, servicesWithRecorder().services);
     expect((await app.inject({ method: 'GET', url: '/v1/context/needs', headers: { authorization: bearer } })).statusCode).toBe(400);
-    expect((await app.inject({ method: 'GET', url: '/v1/context/needs?stepType=zzz', headers: { authorization: bearer } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/v1/context/needs?stepType=zzz', headers: { authorization: bearer } })).statusCode).toBe(
+      400
+    );
     expect((await app.inject({ method: 'GET', url: '/v1/context/needs?stepType=propose_budget' })).statusCode).toBe(401);
     await app.close();
   });

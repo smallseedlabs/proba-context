@@ -12,13 +12,14 @@ curl -s http://127.0.0.1:3500/health   # {"status":"ok","service":"context-api"}
 
 Compose refuses to start until the three variables are set. It starts `context-api` (production mode) and a password-protected Redis that is not published on the host.
 
-Production mode has no identity verification yet: `POST /v1/context/build` answers 503 `identity_unconfigured`. To exercise the pipeline in a container, run the image outside production on a private network:
+Production mode requires `REDIS_URL`, `HUB_ASSERTION_PUBLIC_KEY_FILE`, `HUB_BASE_URL` and `CONTEXT_SERVICE_PRIVATE_KEY_FILE` for `act_as_assertion`. To exercise the pipeline on a workstation without Hub keys, run outside production with local identity:
 
 ```bash
 docker network create ctx
 docker run -d --name ctx-redis --network ctx --network-alias redis redis:7-alpine redis-server --requirepass pw --save ""
 docker run -d --name ctx-api --network ctx -p 127.0.0.1:3500:3500 \
-  -e NODE_ENV=development -e REDIS_URL='redis://:pw@redis:6379' proba-context-api:local
+  -e NODE_ENV=development -e CONTEXT_ALLOW_LOCAL_IDENTITY=true \
+  -e REDIS_URL='redis://:pw@redis:6379' proba-context-api:local
 docker exec ctx-redis redis-cli -a pw xrange proba.audit.events - +   # the context.* events
 ```
 
@@ -37,7 +38,9 @@ docker compose down
 | Compose says a variable is required | Set the variable named in the message. |
 | `REDIS_URL is required when NODE_ENV=production` or `host ... is not in allowedDownstreamHosts` | Set `REDIS_URL`; add its host:port to `allowedDownstreamHosts`. |
 | 503 `audit_unavailable` | Redis is down or the password is wrong. Builds fail closed; they resume when Redis is back. |
-| 503 `identity_unconfigured` | Expected in production until identity verification lands. |
+| 503 `identity_unconfigured` | Outside production without `CONTEXT_ALLOW_LOCAL_IDENTITY` / assertion keys. In production, set assertion + Hub + service key env vars. |
+| 401 `act_as_*` / `act_as_replayed` | Assertion missing, expired, wrong audience/issuer, or replayed `jti`. |
+| 403 on `/v1/context/packets*` | Viewer role; admins only. Check `CONTEXT_API_ADMIN_EMAILS`. |
 | 502 `required_source_failed` | The policy or task source failed or timed out; see the `context.source_fetched` events of the trace. |
 | 422 `budget_exceeded_by_required` | Policy, task and tools need more tokens than the budget; raise `budgetTokens` (up to `budget.maxTokens`) or shorten the policy text. |
 | A packet has `source_timeout` gaps | Raise `sources.<kind>.timeoutMs` or look at the source. |

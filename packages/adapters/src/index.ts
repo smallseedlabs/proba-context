@@ -46,7 +46,74 @@ export {
   LocalIdentityResolver,
   UnconfiguredIdentityResolver,
   assertLocalIdentityAllowed,
+  isLocalIdentityEnabled,
 } from './identity/localIdentityResolver.js';
+export {
+  ACT_AS_ASSERTION_MAX_TTL_SECONDS,
+  ACT_AS_ISSUER,
+  CONTEXT_BRIDGE_AUDIENCE,
+  CONTEXT_CLOCK_SKEW_SECONDS,
+  CONTEXT_HUB_AUDIENCE,
+  CONTEXT_READER_ROLE,
+  DEFAULT_ACT_AS_AUDIENCES,
+} from './identity/constants.js';
+export { ActAsAssertionVerifier, type ActAsAssertionVerifierOptions } from './identity/actAsAssertionVerifier.js';
+export { ActAsIdentityResolver, extractAssertion, type ActAsIdentityResolverOptions } from './identity/actAsIdentityResolver.js';
+export {
+  HubAuthorizeClient,
+  type AuthorizeRequest,
+  type AuthorizeResult,
+  type HubAuthorizeClientOptions,
+  type HubAuthorizePort,
+} from './identity/hubAuthorize.js';
+export {
+  MemoryJtiStore,
+  MemoryJtiStoreRefusedError,
+  RedisJtiStore,
+  type RedisJtiStoreOptions,
+} from './identity/jtiStore.js';
+export {
+  MemoryRateLimiter,
+  MemoryRateLimiterRefusedError,
+  RedisRateLimiter,
+  type RedisRateLimiterOptions,
+} from './identity/rateLimiter.js';
+export {
+  MemoryPacketStore,
+  MemoryPacketStoreRefusedError,
+  RedisPacketStore,
+  type RedisPacketStoreOptions,
+} from './identity/packetStore.js';
+export {
+  FirebaseTokenVerifier,
+  FIREBASE_JWKS_URL,
+  firebaseIssuer,
+  type FirebaseVerifierOptions,
+  type VerifiedFirebaseIdentity,
+} from './identity/firebaseTokenVerifier.js';
+export {
+  FIREBASE_PASSTHROUGH_SCOPES,
+  FirebasePassthroughDisabledError,
+  FirebasePassthroughResolver,
+  type FirebasePassthroughResolverOptions,
+} from './identity/firebasePassthroughResolver.js';
+export {
+  FirebaseAdminAuthorizer,
+  authorizeAdmin,
+  parseEmailList,
+  type AccessPolicy,
+  type AdminDenialReason,
+  type FirebaseAdminAuthorizerOptions,
+} from './identity/adminAuth.js';
+export { PublicKeyFileError, loadPublicKeySet, type LoadPublicKeySetOptions, type PublicKeySet } from './identity/publicKeySet.js';
+export {
+  createAssertionSigners,
+  createTokenSigner,
+  type AssertionOptions,
+  type AssertionSigners,
+  type TokenSigner,
+} from './identity/assertionTesting.js';
+export { createFakeFirebaseIssuer, type FakeFirebaseIssuer, type MintOptions } from './identity/firebaseTesting.js';
 export {
   DownstreamClient,
   type DownstreamClientOptions,

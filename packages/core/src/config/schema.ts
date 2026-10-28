@@ -77,8 +77,25 @@ const sourcesShape = Object.fromEntries(SOURCE_NAMES.map((name) => [name, source
 
 export const identityConfigSchema = z
   .object({
-    /** `act_as_assertion`: verify the Hub-minted `X-Act-As` JWT. `firebase_passthrough`: verify the caller's Firebase ID token. */
+    /** `act_as_assertion`: verify the Hub-minted assertion. `firebase_passthrough`: verify the caller's Firebase ID token (interactive only). */
     mode: z.enum(['act_as_assertion', 'firebase_passthrough']),
+    /**
+     * Accept local identities (`Bearer local:…` / `X-Local-Identity`). Honoured only when
+     * `NODE_ENV!=production`; production always refuses local identity regardless of this flag.
+     */
+    allowLocal: z.boolean().default(false),
+    /** Cache Hub `POST /v1/internal/authorize` answers. Off by default. */
+    authorizeCache: z
+      .object({
+        enabled: z.boolean().default(false),
+        ttlSeconds: z.number().int().nonnegative().max(300).default(0),
+      })
+      .strict()
+      .default({})
+      .refine((c) => !c.enabled || c.ttlSeconds > 0, {
+        message: 'ttlSeconds must be greater than 0 when authorizeCache is enabled',
+        path: ['ttlSeconds'],
+      }),
   })
   .strict();
 

@@ -93,8 +93,10 @@ Empty sources other than analytics are not gaps: no memory is a normal state. Ga
 
 `IdentityResolver` turns credentials into a `ResolvedIdentity` (`workspaceId`, `userId`, `goalId`, `threadId`, `scopes`).
 
-- **Local identity** (`LocalIdentityResolver`): `Authorization: Bearer local:<userId>:<workspaceId>:<goalId>:<threadId>` or `X-Local-Identity: {"userId":..,"workspaceId":..,"goalId":..,"threadId":..}`. There is no verification: whoever can reach the service chooses the identity. It exists for running the service on a workstation and in tests, and is **refused when `NODE_ENV=production`**: the constructor throws, `resolve` rejects too, and the process wiring never creates it in production.
-- **Production** has no verifier yet (the act-as assertion and Firebase passthrough modes in `identity.mode` arrive with a later phase). A production process uses `UnconfiguredIdentityResolver` and answers `POST /v1/context/build` and `GET /v1/context/needs` with 503 `identity_unconfigured`. `/health` is unaffected.
+- **`act_as_assertion`** (default): verify the Hub act-as JWT (`Authorization: Bearer` or `X-Act-As`), claim its `jti`, call Hub `POST /v1/internal/authorize`. See [SCOPING](SCOPING.md).
+- **`firebase_passthrough`**: verify a Firebase ID token; scope from the request body. Disabled unless configured.
+- **Local identity** (`LocalIdentityResolver`): `Authorization: Bearer local:<userId>:<workspaceId>:<goalId>:<threadId>` or `X-Local-Identity: {"userId":..,"workspaceId":..,"goalId":..,"threadId":..}`. No verification. Allowed only when `NODE_ENV!=production` **and** `identity.allowLocal` / `CONTEXT_ALLOW_LOCAL_IDENTITY`. Production always refuses it.
+- **Admin routes** (`GET /v1/context/packets*`): Firebase + allow-list (admin/viewer). Viewers get 403; admins see the manifest only.
 
 ## Adapters wired by `context-api`
 
@@ -120,6 +122,8 @@ Audit sink selection (`runtime.ts`): with `REDIS_URL` set (host must be in `allo
 | `GET /health` | Liveness. |
 | `POST /v1/context/build` | Body: `ContextRequest` (validated with the protocol's zod schema). 200 with a `ContextPacket`. |
 | `GET /v1/context/needs?stepType=` | Need kinds the brain may ask for in that step: the protocol's four kinds minus `restrictedNeeds` and minus kinds whose source is disabled. |
+| `GET /v1/context/packets?goalId=` | Admin (Firebase): paginated packet manifests for a goal. Viewers get 403. |
+| `GET /v1/context/packets/{packetId}` | Admin (Firebase): one packet's manifest only. Viewers get 403. |
 
 Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "code", "message" } }` (400 also carries `issues` with paths and messages, no values):
 
@@ -149,7 +153,7 @@ Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "
 | 0 | Scaffold: monorepo, ports, config, templates, hash, health endpoint, CI, container |
 | 1 | Pipeline, redaction, budgeting, scope filter, config-file policy and tools, Redis stream audit, local identity, `POST /v1/context/build` |
 | 2 | HTTP sources for memory, audit history and analytics; Hub conversation/task still empty until brief 05 merges |
-| 3 | Act-as assertion verification, Hub authorize, admin Firebase routes, rate limits |
+| 3 | Act-as assertion verification, Hub authorize, admin Firebase packet routes, rate limits, jti replay store |
 
 ## Open questions
 

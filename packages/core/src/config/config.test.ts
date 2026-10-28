@@ -55,6 +55,8 @@ describe('context config schema', () => {
   it('accepts a complete config', () => {
     const config = parseContextConfig(validConfig());
     expect(config.identity.mode).toBe('act_as_assertion');
+    expect(config.identity.allowLocal).toBe(false);
+    expect(config.identity.authorizeCache).toEqual({ enabled: false, ttlSeconds: 0 });
     expect(config.cache.enabled).toBe(false);
   });
 

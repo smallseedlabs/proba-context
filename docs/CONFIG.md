@@ -5,7 +5,9 @@ The service reads `CONTEXT_CONFIG_PATH` (default `config/context.config.yaml`) a
 | Key | Meaning |
 |-----|---------|
 | `version` | Config version, copied into every packet as `configVersion`. |
-| `identity.mode` | `act_as_assertion` or `firebase_passthrough`. |
+| `identity.mode` | `act_as_assertion` (default) or `firebase_passthrough`. |
+| `identity.allowLocal` | Accept local identities when `NODE_ENV!=production`. Ignored (and refused) in production. Also enabled by `CONTEXT_ALLOW_LOCAL_IDENTITY`. |
+| `identity.authorizeCache` | `enabled` (default `false`) and `ttlSeconds` (must be positive when enabled). Caches Hub `POST /v1/internal/authorize` answers. |
 | `sources.<kind>` | One entry per section kind (`policy`, `task`, `conversation`, `memory`, `audit_history`, `analytics`, `tools`): `enabled`, `timeoutMs` (a source that does not answer in time becomes a `source_timeout` gap), `tokenShare` (enabled shares add up to at most 1; a section other than policy, task and tools may use at most this share of the budget). |
 | `cache` | `enabled` (default `false`), `ttlSeconds` (default `0`, must be positive when enabled), `maxEntries`. |
 | `budget` | `defaultTokens`, `maxTokens` (a request's `budgetTokens` is capped by it), and `priorities` per section kind (lower is kept first). Policy, task and tools are never dropped whatever their priority; the others are trimmed in reverse priority order. |
@@ -39,16 +41,25 @@ Unknown keys are rejected. The config file's directory also holds everything els
 | `HOST` | `0.0.0.0` | Listen address inside the container; Compose publishes it on `127.0.0.1` only. |
 | `LOG_LEVEL` | `info` | Log level. |
 | `CONTEXT_CONFIG_PATH` | `config/context.config.yaml` | Config file. Templates, policy and tools are read from its directory. |
-| `NODE_ENV` | unset | `production` (the container default) refuses local identities and requires `REDIS_URL`. |
-| `REDIS_URL` | none | Redis that holds the audit stream, for example `redis://:password@redis:6379`. Its host must be in `allowedDownstreamHosts`. Required when `NODE_ENV=production`; without it, outside production, audit events are printed one line each. |
+| `NODE_ENV` | unset | `production` (the container default) refuses local identities and in-memory rate/jti/packet stores; requires `REDIS_URL` and assertion wiring. |
+| `REDIS_URL` | none | Redis for the audit stream, jti store, rate limits and packet manifests. Host must be in `allowedDownstreamHosts`. Required when `NODE_ENV=production`. |
 | `AUDIT_STREAM` | `proba.audit.events` | Stream name (the one the audit consumer reads). |
 | `AUDIT_STREAM_MAXLEN` | `0` (no trimming) | Approximate `MAXLEN` for the stream. |
 | `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN` | none, required by Compose | Legacy compose placeholders; Phase-2 reads use the service JWT below. |
 | `REDIS_PASSWORD` | none, required by Compose | Password of the Compose Redis, also used in `REDIS_URL`. |
-| `MEMORY_API_BASE_URL` | none | Base URL of memory-api (for example `http://proba-memory:3420`). With `AUDIT_API_BASE_URL` and `CONTEXT_SERVICE_PRIVATE_KEY_FILE`, wires the Phase-2 HTTP memory source. |
-| `AUDIT_API_BASE_URL` | none | Base URL of audit-api (for example `http://proba-audit:3400`). Wires audit history and analytics HTTP sources together with the memory URL and private key. |
-| `HUB_BASE_URL` | none | Base URL of the Hub (for example `http://proba-hub:3300`). With `CONTEXT_SERVICE_PRIVATE_KEY_FILE`, wires Hub `TaskStateHttpSource` and `ConversationHttpSource` (`GET /v1/internal/goals/{goalId}/state`, `GET /v1/internal/threads/{threadId}/messages`). |
-| `CONTEXT_SERVICE_PRIVATE_KEY_FILE` | none | Ed25519 PEM private key the bridge uses to mint service JWTs (`iss=proba-context`, `sub=context-reader`, `aud` = target `proba-memory` \| `proba-audit` \| `proba-hub`, ≤2 minutes). Required when any of the Phase-2 base URLs above are set. |
+| `MEMORY_API_BASE_URL` | none | Base URL of memory-api. With `AUDIT_API_BASE_URL` and `CONTEXT_SERVICE_PRIVATE_KEY_FILE`, wires Phase-2 HTTP memory. |
+| `AUDIT_API_BASE_URL` | none | Base URL of audit-api. Wires audit history and analytics HTTP sources. |
+| `HUB_BASE_URL` | none | Base URL of the Hub. Required for act-as identity (authorize) and for Hub task/conversation sources. |
+| `HUB_ASSERTION_PUBLIC_KEY_FILE` | none | JWKS of Hub act-as assertion public keys. Required in production for `act_as_assertion`. Absolute path and `go-w` in production. |
+| `CONTEXT_SERVICE_PRIVATE_KEY_FILE` | none | Ed25519 PEM private key the bridge uses to mint service JWTs (`iss=proba-context`, `sub=context-reader`, `aud` = target). Required with Hub/memory/audit URLs and for authorize. |
 | `CONTEXT_SERVICE_KEY_ID` | `bridge-key-1` | `kid` written into the service JWT header. |
+| `CONTEXT_ALLOW_LOCAL_IDENTITY` | unset | When truthy and `NODE_ENV!=production`, enables the local identity resolver (also `identity.allowLocal`). |
+| `FIREBASE_PROJECT_ID` | none | Enables Firebase verification for `firebase_passthrough` and for admin packet routes. |
+| `CONTEXT_API_ADMIN_EMAILS` | none | Comma-separated admin emails (Firebase allow-list). |
+| `CONTEXT_API_ALLOWED_EMAILS` | none | Comma-separated viewer emails. |
+| `CONTEXT_API_ALLOWED_EMAIL_DOMAINS` | none | Comma-separated viewer email domains. |
+| `CONTEXT_API_CORS_ORIGINS` | none | Comma-separated allowed origins. Empty = CORS disabled (strict default). |
+| `CONTEXT_RATE_LIMIT_MAX` | `60` | Max requests per caller and per user per window. |
+| `CONTEXT_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds. |
 
-Phase 3 (identity: act-as assertion verification and Hub `POST /v1/internal/authorize`) is not wired yet.
+Production refuses in-memory rate limiters, jti stores and packet stores. Every response carries `Cache-Control: no-store`.

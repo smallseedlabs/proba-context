@@ -5,33 +5,56 @@ import {
   ConfigError,
   loadContextConfig,
   loadTemplates,
+  type AdminAuthorizer,
   type AuditEmitter,
   type IdentityResolver,
   type ContextConfig,
+  type JtiStore,
+  type PacketStore,
+  type RateLimiter,
 } from '@smallseedlabs/proba-context-core';
 import {
+  ActAsAssertionVerifier,
+  ActAsIdentityResolver,
   ApproximateTokenizer,
+  DownstreamClient,
+  FirebaseAdminAuthorizer,
+  FirebasePassthroughResolver,
+  FirebaseTokenVerifier,
+  HubAuthorizeClient,
   LocalIdentityResolver,
   LogAuditEmitter,
+  MemoryJtiStore,
+  MemoryPacketStore,
+  MemoryRateLimiter,
+  RedisJtiStore,
+  RedisPacketStore,
+  RedisRateLimiter,
   SystemClock,
   UnconfiguredIdentityResolver,
   createHttpSources,
   createInProcessSources,
   createRedisStreamAuditEmitter,
   createServiceTokenSigner,
+  isLocalIdentityEnabled,
   loadConfigPolicy,
+  loadPublicKeySet,
+  parseEmailList,
   type WiredHttpSource,
 } from '@smallseedlabs/proba-context-adapters';
 import type { ContextServices } from './app.js';
 
+export type IdentityModeName =
+  | 'local_identity'
+  | 'act_as_assertion'
+  | 'firebase_passthrough'
+  | 'unconfigured';
+
 export interface Runtime {
   services: ContextServices;
   config: ContextConfig;
-  /** How callers are identified, for the start-up log. */
-  identityMode: 'local_identity' | 'unconfigured';
-  /** Where audit events go, for the start-up log. */
+  identityMode: IdentityModeName;
   auditSink: 'redis_stream' | 'log';
-  /** Which Phase-2 HTTP sources are wired. */
   httpSources: WiredHttpSource[];
   close(): Promise<void>;
 }
@@ -43,31 +66,33 @@ function hostOf(url: string, defaultPort: string): string {
   return `${u.hostname}:${u.port || defaultPort}`;
 }
 
+function truthy(value: string | undefined): boolean {
+  if (!value) return false;
+  const v = value.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
 /**
- * Wires the pipeline from the config directory (`context.config.yaml`, `templates/`, `policy.yaml`,
- * `tools.yaml`) and the environment. Throws {@link ConfigError} or `Error` when something is missing,
- * so a bad deployment stops at start-up.
+ * Wires the pipeline from the config directory and the environment.
  *
- * - Audit: events go to the Redis stream when `REDIS_URL` is set (its host must be in
- *   `allowedDownstreamHosts`). Without it, a workstation run logs them; production refuses to start.
- * - Identity: a production process has no identity verification in this phase and answers 503 to
- *   context requests; the local identity resolver is only created outside production.
- * - Phase-2 HTTP sources: memory/audit/analytics when `MEMORY_API_BASE_URL`, `AUDIT_API_BASE_URL`
- *   and `CONTEXT_SERVICE_PRIVATE_KEY_FILE` are set; Hub task/conversation when `HUB_BASE_URL` and
- *   the same private key are set.
+ * - Audit: Redis stream when `REDIS_URL` is set; production requires it.
+ * - Identity: `act_as_assertion` (default) verifies Hub assertions + Hub authorize; `firebase_passthrough`
+ *   verifies Firebase ID tokens when configured; local identity only when `NODE_ENV!=production` and
+ *   `identity.allowLocal` / `CONTEXT_ALLOW_LOCAL_IDENTITY`.
+ * - Rate limits / jti / packet manifests: Redis in production (memory refused); memory outside production.
  */
 export function createRuntime(env: Env, configPath: string): Runtime {
   const config = loadContextConfig(configPath);
   const configDir = dirname(configPath);
   const clock = new SystemClock();
   const production = env.NODE_ENV === 'production';
+  const closers: Array<() => Promise<void>> = [];
 
   const policy = loadConfigPolicy(configDir, clock);
   const templates = loadTemplates(join(configDir, 'templates'));
 
   let audit: AuditEmitter;
   let auditSink: Runtime['auditSink'];
-  let closeAudit: () => Promise<void> = async () => undefined;
   if (env.REDIS_URL) {
     const host = hostOf(env.REDIS_URL, '6379');
     if (!config.allowedDownstreamHosts.includes(host)) {
@@ -82,7 +107,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     });
     audit = emitter;
     auditSink = 'redis_stream';
-    closeAudit = () => emitter.close();
+    closers.push(() => emitter.close());
   } else if (production) {
     throw new Error('REDIS_URL is required when NODE_ENV=production: audit events must reach the audit stream.');
   } else {
@@ -90,71 +115,165 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     auditSink = 'log';
   }
 
-  const identity: IdentityResolver = production
-    ? new UnconfiguredIdentityResolver()
-    : new LocalIdentityResolver(() => env.NODE_ENV);
+  const rateLimitMax = Number(env.CONTEXT_RATE_LIMIT_MAX ?? 60);
+  const rateLimitWindowMs = Number(env.CONTEXT_RATE_LIMIT_WINDOW_MS ?? 60_000);
+  if (!Number.isInteger(rateLimitMax) || rateLimitMax < 1) {
+    throw new ConfigError('CONTEXT_RATE_LIMIT_MAX', ['must be a positive integer']);
+  }
+  if (!Number.isInteger(rateLimitWindowMs) || rateLimitWindowMs < 1000) {
+    throw new ConfigError('CONTEXT_RATE_LIMIT_WINDOW_MS', ['must be an integer >= 1000']);
+  }
+
+  let rateLimiter: RateLimiter;
+  let jtiStore: JtiStore;
+  let packetStore: PacketStore;
+  if (env.REDIS_URL) {
+    rateLimiter = new RedisRateLimiter({ url: env.REDIS_URL, keyPrefix: 'proba:context:rl:' });
+    jtiStore = new RedisJtiStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:jti:' });
+    packetStore = new RedisPacketStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:packet:' });
+    closers.push(async () => {
+      await rateLimiter.close?.();
+      await jtiStore.close?.();
+      await packetStore.close?.();
+    });
+  } else if (production) {
+    throw new Error('REDIS_URL is required when NODE_ENV=production for rate limits, jti store and packet manifests.');
+  } else {
+    rateLimiter = new MemoryRateLimiter(clock, env.NODE_ENV);
+    jtiStore = new MemoryJtiStore(clock, env.NODE_ENV);
+    packetStore = new MemoryPacketStore(env.NODE_ENV);
+  }
 
   const memoryBaseUrl = env.MEMORY_API_BASE_URL?.trim();
   const auditBaseUrl = env.AUDIT_API_BASE_URL?.trim();
   const hubBaseUrl = env.HUB_BASE_URL?.trim();
   const privateKeyFile = env.CONTEXT_SERVICE_PRIVATE_KEY_FILE?.trim();
+  const assertionKeyFile = env.HUB_ASSERTION_PUBLIC_KEY_FILE?.trim();
 
   const wantMemoryAudit = Boolean(memoryBaseUrl && auditBaseUrl);
   const wantHub = Boolean(hubBaseUrl);
-  let httpSources: WiredHttpSource[] = [];
+  const wantActAs = Boolean(assertionKeyFile && hubBaseUrl);
 
-  if ((wantMemoryAudit || wantHub) && privateKeyFile) {
-    const material = loadPemServicePrivateKey(privateKeyFile, env.CONTEXT_SERVICE_KEY_ID);
-    const tokenSigner = createServiceTokenSigner({ material, clock });
-    const http = createHttpSources({
-      endpoints: {
-        ...(wantMemoryAudit && memoryBaseUrl && auditBaseUrl ? { memoryBaseUrl, auditBaseUrl } : {}),
-        ...(wantHub && hubBaseUrl ? { hubBaseUrl } : {}),
-      },
-      allowedHosts: config.allowedDownstreamHosts,
-      tokenSigner,
-    });
-    httpSources = http.wired;
-
-    return {
-      config,
-      identityMode: production ? 'unconfigured' : 'local_identity',
-      auditSink,
-      httpSources,
-      services: {
-        identity,
-        deps: {
-          config,
-          templates,
-          sources: createInProcessSources({
-            policy: policy.policy,
-            tools: policy.tools,
-            clock,
-            ...(http.memory ? { memory: http.memory } : {}),
-            ...(http.auditHistory ? { auditHistory: http.auditHistory } : {}),
-            ...(http.analytics ? { analytics: http.analytics } : {}),
-            ...(http.task ? { task: http.task } : {}),
-            ...(http.conversation ? { conversation: http.conversation } : {}),
-          }),
-          policyGuard: policy.guard,
-          tokenizer: new ApproximateTokenizer(),
-          clock,
-          audit,
-        },
-      },
-      close: closeAudit,
-    };
-  }
-
-  if ((wantMemoryAudit || wantHub) && !privateKeyFile) {
+  if ((wantMemoryAudit || wantHub || wantActAs) && !privateKeyFile) {
     throw new ConfigError('CONTEXT_SERVICE_PRIVATE_KEY_FILE', [
-      'required when MEMORY_API_BASE_URL/AUDIT_API_BASE_URL or HUB_BASE_URL is set',
+      'required when MEMORY_API_BASE_URL/AUDIT_API_BASE_URL, HUB_BASE_URL or HUB_ASSERTION_PUBLIC_KEY_FILE is set',
     ]);
   }
 
+  let httpSources: WiredHttpSource[] = [];
+  let hubClient: DownstreamClient | undefined;
+  let tokenSigner: ReturnType<typeof createServiceTokenSigner> | undefined;
+
+  if (privateKeyFile) {
+    tokenSigner = createServiceTokenSigner({
+      material: loadPemServicePrivateKey(privateKeyFile, env.CONTEXT_SERVICE_KEY_ID),
+      clock,
+    });
+  }
+
+  const http =
+    tokenSigner && (wantMemoryAudit || wantHub)
+      ? createHttpSources({
+          endpoints: {
+            ...(wantMemoryAudit && memoryBaseUrl && auditBaseUrl ? { memoryBaseUrl, auditBaseUrl } : {}),
+            ...(wantHub && hubBaseUrl ? { hubBaseUrl } : {}),
+          },
+          allowedHosts: config.allowedDownstreamHosts,
+          tokenSigner,
+        })
+      : undefined;
+
+  if (http) {
+    httpSources = http.wired;
+    hubClient = http.hubClient;
+  }
+
+  const allowLocal = isLocalIdentityEnabled(
+    env.NODE_ENV,
+    config.identity.allowLocal || truthy(env.CONTEXT_ALLOW_LOCAL_IDENTITY)
+  );
+
+  let identity: IdentityResolver;
+  let identityMode: IdentityModeName;
+  let admin: AdminAuthorizer | undefined;
+  const firebaseProjectId = env.FIREBASE_PROJECT_ID?.trim();
+
+  if (config.identity.mode === 'firebase_passthrough') {
+    if (!firebaseProjectId) {
+      if (production) {
+        throw new ConfigError('FIREBASE_PROJECT_ID', [
+          'required when identity.mode is firebase_passthrough and NODE_ENV=production',
+        ]);
+      }
+      identity = allowLocal ? new LocalIdentityResolver(() => env.NODE_ENV) : new UnconfiguredIdentityResolver();
+      identityMode = allowLocal ? 'local_identity' : 'unconfigured';
+    } else {
+      const verifier = new FirebaseTokenVerifier({ projectId: firebaseProjectId, clock });
+      identity = new FirebasePassthroughResolver({ verifier, enabled: true });
+      identityMode = 'firebase_passthrough';
+      admin = buildAdminAuthorizer(verifier, env);
+    }
+  } else if (wantActAs && tokenSigner && hubBaseUrl && assertionKeyFile) {
+    const keys = loadPublicKeySet(assertionKeyFile, {
+      envName: 'HUB_ASSERTION_PUBLIC_KEY_FILE',
+      nodeEnv: env.NODE_ENV,
+    });
+    if (!hubClient) {
+      hubClient = new DownstreamClient({
+        name: 'proba-hub',
+        baseUrl: hubBaseUrl,
+        audience: 'proba-hub',
+        allowedHosts: config.allowedDownstreamHosts,
+        tokenSigner,
+      });
+    }
+    identity = new ActAsIdentityResolver({
+      verifier: new ActAsAssertionVerifier({ keys: keys.keys, clock }),
+      jtiStore,
+      authorize: new HubAuthorizeClient({
+        client: hubClient,
+        cache: {
+          enabled: config.identity.authorizeCache.enabled,
+          ttlSeconds: config.identity.authorizeCache.ttlSeconds,
+          clock,
+        },
+      }),
+    });
+    identityMode = 'act_as_assertion';
+    if (firebaseProjectId) {
+      admin = buildAdminAuthorizer(new FirebaseTokenVerifier({ projectId: firebaseProjectId, clock }), env);
+    }
+  } else if (production) {
+    throw new ConfigError('HUB_ASSERTION_PUBLIC_KEY_FILE', [
+      'required with HUB_BASE_URL and CONTEXT_SERVICE_PRIVATE_KEY_FILE when NODE_ENV=production and identity.mode is act_as_assertion',
+    ]);
+  } else if (allowLocal) {
+    identity = new LocalIdentityResolver(() => env.NODE_ENV);
+    identityMode = 'local_identity';
+  } else {
+    identity = new UnconfiguredIdentityResolver();
+    identityMode = 'unconfigured';
+  }
+
+  const corsOrigins = (env.CONTEXT_API_CORS_ORIGINS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const sources = createInProcessSources({
+    policy: policy.policy,
+    tools: policy.tools,
+    clock,
+    ...(http?.memory ? { memory: http.memory } : {}),
+    ...(http?.auditHistory ? { auditHistory: http.auditHistory } : {}),
+    ...(http?.analytics ? { analytics: http.analytics } : {}),
+    ...(http?.task ? { task: http.task } : {}),
+    ...(http?.conversation ? { conversation: http.conversation } : {}),
+  });
+
   return {
     config,
-    identityMode: production ? 'unconfigured' : 'local_identity',
+    identityMode,
     auditSink,
     httpSources,
     services: {
@@ -162,22 +281,36 @@ export function createRuntime(env: Env, configPath: string): Runtime {
       deps: {
         config,
         templates,
-        sources: createInProcessSources({
-          policy: policy.policy,
-          tools: policy.tools,
-          clock,
-        }),
+        sources,
         policyGuard: policy.guard,
         tokenizer: new ApproximateTokenizer(),
         clock,
         audit,
       },
+      rateLimiter,
+      rateLimit: { max: rateLimitMax, windowMs: rateLimitWindowMs },
+      packetStore,
+      ...(admin ? { admin } : {}),
+      corsOrigins,
+      scopeViolationCount: { value: 0 },
     },
-    close: closeAudit,
+    close: async () => {
+      for (const close of closers) await close();
+    },
   };
 }
 
-/** PEM-only loader for start-up (JWKS private material is supported via `loadServicePrivateKey` in tests). */
+function buildAdminAuthorizer(verifier: FirebaseTokenVerifier, env: Env): AdminAuthorizer {
+  return new FirebaseAdminAuthorizer({
+    verifier,
+    policy: {
+      allowedEmails: parseEmailList(env.CONTEXT_API_ALLOWED_EMAILS),
+      allowedEmailDomains: parseEmailList(env.CONTEXT_API_ALLOWED_EMAIL_DOMAINS),
+      adminEmails: parseEmailList(env.CONTEXT_API_ADMIN_EMAILS),
+    },
+  });
+}
+
 function loadPemServicePrivateKey(filePath: string, kidEnv: string | undefined) {
   const raw = readFileSync(filePath, 'utf8').trim();
   if (raw.startsWith('{')) {

@@ -36,6 +36,14 @@ export function assertLocalIdentityAllowed(nodeEnv: string | undefined): void {
 }
 
 /**
+ * Local identity is allowed only when `NODE_ENV!=production` and the config/env flag is on.
+ * Production always refuses, regardless of the flag.
+ */
+export function isLocalIdentityEnabled(nodeEnv: string | undefined, allowLocal: boolean): boolean {
+  return nodeEnv !== 'production' && allowLocal;
+}
+
+/**
  * Identity for running the service on a workstation or in tests, with no token verification.
  *
  * Accepts either
