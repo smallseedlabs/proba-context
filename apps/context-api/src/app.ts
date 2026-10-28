@@ -1,3 +1,4 @@
+import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from 'fastify';
 import {
   ContextBuildError,
@@ -59,11 +60,17 @@ export function bodyLimitOf(config: ContextConfig): number {
   return config.limits.maxRequestBytes;
 }
 
+/** Default ceiling for authenticated context routes (per IP, sliding window). */
+export const CONTEXT_ROUTE_RATE_LIMIT = { max: 60, timeWindow: '1 minute' } as const;
+
 /**
  * Builds the HTTP app. `GET /health` is always served. The context routes (`POST /v1/context/build`,
  * `GET /v1/context/needs`) are registered when `services` is given.
  */
-export function buildApp(options: FastifyServerOptions = {}, services?: ContextServices): FastifyInstance {
+export async function buildApp(
+  options: FastifyServerOptions = {},
+  services?: ContextServices
+): Promise<FastifyInstance> {
   const app = Fastify({
     ...(services ? { bodyLimit: bodyLimitOf(services.deps.config) } : {}),
     ...options,
@@ -80,65 +87,86 @@ export function buildApp(options: FastifyServerOptions = {}, services?: ContextS
 
   app.get('/health', async (): Promise<HealthResponse> => ({ status: 'ok', service: SERVICE_NAME }));
 
-  if (services) registerContextRoutes(app, services);
+  if (services) await registerContextRoutes(app, services);
   return app;
 }
 
-function registerContextRoutes(app: FastifyInstance, services: ContextServices): void {
+async function registerContextRoutes(app: FastifyInstance, services: ContextServices): Promise<void> {
   const { deps } = services;
+
+  // Rate-limit authenticated routes (CodeQL + production hardening). Health stays uncapped.
+  await app.register(rateLimit, {
+    global: false,
+    max: CONTEXT_ROUTE_RATE_LIMIT.max,
+    timeWindow: CONTEXT_ROUTE_RATE_LIMIT.timeWindow,
+    addHeadersOnExceeding: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true },
+    addHeaders: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true, 'retry-after': true },
+  });
 
   async function authenticate(request: FastifyRequest): Promise<ResolvedIdentity> {
     return services.identity.resolve(credentialsOf(request));
   }
 
-  app.post('/v1/context/build', async (request, reply) => {
-    let identity: ResolvedIdentity;
-    try {
-      identity = await authenticate(request);
-    } catch (err) {
-      return identityFailure(reply, err);
-    }
-
-    const parsed = contextRequestSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: {
-          code: 'invalid_request',
-          message: 'The request body is not a valid context request.',
-          issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-        },
-      });
-    }
-
-    try {
-      const packet = await buildContext(deps, parsed.data, identity);
-      return reply.status(200).send(packet);
-    } catch (err) {
-      if (err instanceof ContextBuildError) {
-        if (err.code === 'internal_error' || err.code === 'audit_unavailable') app.log.error({ err }, 'context build failed');
-        return reply.status(BUILD_ERROR_STATUS[err.code]).send({ error: { code: err.code, message: err.message } });
+  app.post(
+    '/v1/context/build',
+    { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
+    async (request, reply) => {
+      let identity: ResolvedIdentity;
+      try {
+        identity = await authenticate(request);
+      } catch (err) {
+        return identityFailure(reply, err);
       }
-      throw err;
-    }
-  });
 
-  app.get('/v1/context/needs', async (request, reply) => {
-    try {
-      await authenticate(request);
-    } catch (err) {
-      return identityFailure(reply, err);
+      const parsed = contextRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: {
+            code: 'invalid_request',
+            message: 'The request body is not a valid context request.',
+            issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+          },
+        });
+      }
+
+      try {
+        const packet = await buildContext(deps, parsed.data, identity);
+        return reply.status(200).send(packet);
+      } catch (err) {
+        if (err instanceof ContextBuildError) {
+          if (err.code === 'internal_error' || err.code === 'audit_unavailable') app.log.error({ err }, 'context build failed');
+          return reply.status(BUILD_ERROR_STATUS[err.code]).send({ error: { code: err.code, message: err.message } });
+        }
+        throw err;
+      }
     }
-    const step = stepTypeSchema.safeParse((request.query as { stepType?: unknown }).stepType);
-    if (!step.success) {
-      return reply.status(400).send({
-        error: { code: 'invalid_request', message: `stepType must be one of: ${stepTypeSchema.options.join(', ')}.` },
+  );
+
+  app.get(
+    '/v1/context/needs',
+    { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
+    async (request, reply) => {
+      try {
+        await authenticate(request);
+      } catch (err) {
+        return identityFailure(reply, err);
+      }
+      const step = stepTypeSchema.safeParse((request.query as { stepType?: unknown }).stepType);
+      if (!step.success) {
+        return reply.status(400).send({
+          error: { code: 'invalid_request', message: `stepType must be one of: ${stepTypeSchema.options.join(', ')}.` },
+        });
+      }
+      const allowedNeeds = NEED_KINDS.filter(
+        (kind) => deps.policyGuard.checkNeed(step.data, kind).allowed && deps.config.sources[NEED_SECTION[kind]].enabled
+      );
+      return reply.status(200).send({
+        stepType: step.data,
+        allowedNeeds,
+        maxNeedsPerRequest: deps.config.limits.maxNeedsPerRequest,
       });
     }
-    const allowedNeeds = NEED_KINDS.filter(
-      (kind) => deps.policyGuard.checkNeed(step.data, kind).allowed && deps.config.sources[NEED_SECTION[kind]].enabled
-    );
-    return reply.status(200).send({ stepType: step.data, allowedNeeds, maxNeedsPerRequest: deps.config.limits.maxNeedsPerRequest });
-  });
+  );
 }
 
 function identityFailure(reply: FastifyReply, err: unknown) {

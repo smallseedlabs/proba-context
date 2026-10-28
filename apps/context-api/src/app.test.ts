@@ -48,7 +48,7 @@ function servicesWithRecorder(): { services: ContextServices; audit: RecordingEm
 
 describe('GET /health', () => {
   it('reports the service as ok', async () => {
-    const app = buildApp();
+    const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ok', service: 'context-api' });
@@ -56,13 +56,13 @@ describe('GET /health', () => {
   });
 
   it('is still served next to the context routes', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
     await app.close();
   });
 
   it('serves no context routes without services', async () => {
-    const app = buildApp();
+    const app = await buildApp();
     expect((await app.inject({ method: 'POST', url: '/v1/context/build', payload: body() })).statusCode).toBe(404);
     expect((await app.inject({ method: 'GET', url: '/v1/context' })).statusCode).toBe(404);
     await app.close();
@@ -72,7 +72,7 @@ describe('GET /health', () => {
 describe('POST /v1/context/build', () => {
   it('builds the raise-the-budget packet from config policy, tools and the identity', async () => {
     const { services, audit } = servicesWithRecorder();
-    const app = buildApp({}, services);
+    const app = await buildApp({}, services);
     const res = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: bearer }, payload: body() });
     expect(res.statusCode).toBe(200);
     const packet = res.json<ContextPacket>();
@@ -97,7 +97,7 @@ describe('POST /v1/context/build', () => {
   });
 
   it('accepts the X-Local-Identity header', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     const identity = JSON.stringify({ userId: IDS.user, workspaceId: 'seedbed', goalId: IDS.goal, threadId: IDS.thread });
     const res = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { 'x-local-identity': identity }, payload: body() });
     expect(res.statusCode).toBe(200);
@@ -105,7 +105,7 @@ describe('POST /v1/context/build', () => {
   });
 
   it('answers 401 without an identity and 401 for a malformed one', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     const none = await app.inject({ method: 'POST', url: '/v1/context/build', payload: body() });
     expect(none.statusCode).toBe(401);
     expect(none.json()).toEqual({ error: { code: 'identity_missing', message: expect.any(String) } });
@@ -116,7 +116,7 @@ describe('POST /v1/context/build', () => {
 
   it('answers 403 when the body names a different user than the identity, and audits the denial', async () => {
     const { services, audit } = servicesWithRecorder();
-    const app = buildApp({}, services);
+    const app = await buildApp({}, services);
     const res = await app.inject({
       method: 'POST',
       url: '/v1/context/build',
@@ -131,7 +131,7 @@ describe('POST /v1/context/build', () => {
   });
 
   it('answers 400 with the offending paths for an invalid body', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     const res = await app.inject({
       method: 'POST',
       url: '/v1/context/build',
@@ -144,7 +144,7 @@ describe('POST /v1/context/build', () => {
   });
 
   it('answers 422 when the budget cannot hold policy, task and tools', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     const res = await app.inject({
       method: 'POST',
       url: '/v1/context/build',
@@ -163,7 +163,7 @@ describe('POST /v1/context/build', () => {
         throw new Error('redis down at 10.1.2.3');
       },
     };
-    const app = buildApp({ logger: false }, { ...services, deps: { ...services.deps, audit: failing } });
+    const app = await buildApp({ logger: false }, { ...services, deps: { ...services.deps, audit: failing } });
     const res = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: bearer }, payload: body() });
     expect(res.statusCode).toBe(503);
     expect(res.body).not.toContain('10.1.2.3');
@@ -173,7 +173,7 @@ describe('POST /v1/context/build', () => {
   it('rejects a body larger than limits.maxRequestBytes', async () => {
     const { services } = servicesWithRecorder();
     const config = { ...services.deps.config, limits: { ...services.deps.config.limits, maxRequestBytes: 300 } };
-    const app = buildApp({}, { ...services, deps: { ...services.deps, config } });
+    const app = await buildApp({}, { ...services, deps: { ...services.deps, config } });
     const res = await app.inject({
       method: 'POST',
       url: '/v1/context/build',
@@ -188,7 +188,7 @@ describe('POST /v1/context/build', () => {
 describe('production refuses local identity', () => {
   it('has no local identity resolver: context requests are answered 503 even with a local bearer', async () => {
     const { services } = servicesWithRecorder();
-    const app = buildApp({}, { ...services, identity: new UnconfiguredIdentityResolver() });
+    const app = await buildApp({}, { ...services, identity: new UnconfiguredIdentityResolver() });
     const build = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: bearer }, payload: body() });
     expect(build.statusCode).toBe(503);
     expect(build.json().error.code).toBe('identity_unconfigured');
@@ -222,7 +222,7 @@ describe('production refuses local identity', () => {
 
 describe('GET /v1/context/needs', () => {
   it('lists the need kinds policy allows for the step', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     const get = (stepType: string) =>
       app.inject({ method: 'GET', url: `/v1/context/needs?stepType=${stepType}`, headers: { authorization: bearer } });
     expect((await get('propose_budget')).json()).toEqual({
@@ -236,7 +236,7 @@ describe('GET /v1/context/needs', () => {
   });
 
   it('answers 400 for a missing or unknown stepType and 401 without an identity', async () => {
-    const app = buildApp({}, servicesWithRecorder().services);
+    const app = await buildApp({}, servicesWithRecorder().services);
     expect((await app.inject({ method: 'GET', url: '/v1/context/needs', headers: { authorization: bearer } })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/v1/context/needs?stepType=zzz', headers: { authorization: bearer } })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/v1/context/needs?stepType=propose_budget' })).statusCode).toBe(401);

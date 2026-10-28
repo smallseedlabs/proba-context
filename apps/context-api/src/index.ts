@@ -23,12 +23,12 @@ async function main(): Promise<void> {
     runtime = createRuntime(process.env, configPath);
   } catch (err) {
     // The app does not exist yet; use a throw-away instance only for its structured logger.
-    const bootLog = buildApp({ logger }).log;
+    const bootLog = (await buildApp({ logger })).log;
     bootLog.error(err instanceof ConfigError ? err.message : err);
     process.exit(1);
   }
 
-  const app = buildApp({ logger }, runtime.services);
+  const app = await buildApp({ logger }, runtime.services);
   try {
     app.log.info(
       {
