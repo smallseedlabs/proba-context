@@ -1,3 +1,5 @@
+import { createPrivateKey } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   ConfigError,
@@ -13,8 +15,10 @@ import {
   LogAuditEmitter,
   SystemClock,
   UnconfiguredIdentityResolver,
+  createHttpSources,
   createInProcessSources,
   createRedisStreamAuditEmitter,
+  createServiceTokenSigner,
   loadConfigPolicy,
 } from '@smallseedlabs/proba-context-adapters';
 import type { ContextServices } from './app.js';
@@ -26,6 +30,8 @@ export interface Runtime {
   identityMode: 'local_identity' | 'unconfigured';
   /** Where audit events go, for the start-up log. */
   auditSink: 'redis_stream' | 'log';
+  /** Which Phase-2 HTTP sources are wired. */
+  httpSources: 'memory_audit_analytics' | 'none';
   close(): Promise<void>;
 }
 
@@ -45,6 +51,9 @@ function hostOf(url: string): string {
  *   `allowedDownstreamHosts`). Without it, a workstation run logs them; production refuses to start.
  * - Identity: a production process has no identity verification in this phase and answers 503 to
  *   context requests; the local identity resolver is only created outside production.
+ * - Phase-2 HTTP sources (memory, audit history, analytics) are wired when
+ *   `MEMORY_API_BASE_URL`, `AUDIT_API_BASE_URL` and `CONTEXT_SERVICE_PRIVATE_KEY_FILE` are all set.
+ *   Hub conversation/task sources wait for brief 05.
  */
 export function createRuntime(env: Env, configPath: string): Runtime {
   const config = loadContextConfig(configPath);
@@ -84,16 +93,47 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     ? new UnconfiguredIdentityResolver()
     : new LocalIdentityResolver(() => env.NODE_ENV);
 
+  const memoryBaseUrl = env.MEMORY_API_BASE_URL?.trim();
+  const auditBaseUrl = env.AUDIT_API_BASE_URL?.trim();
+  const privateKeyFile = env.CONTEXT_SERVICE_PRIVATE_KEY_FILE?.trim();
+
+  let httpSources: Runtime['httpSources'] = 'none';
+  let memory;
+  let auditHistory;
+  let analytics;
+
+  if (memoryBaseUrl && auditBaseUrl && privateKeyFile) {
+    const material = loadPemServicePrivateKey(privateKeyFile, env.CONTEXT_SERVICE_KEY_ID);
+    const tokenSigner = createServiceTokenSigner({ material, clock });
+    const http = createHttpSources({
+      endpoints: { memoryBaseUrl, auditBaseUrl },
+      allowedHosts: config.allowedDownstreamHosts,
+      tokenSigner,
+    });
+    memory = http.memory;
+    auditHistory = http.auditHistory;
+    analytics = http.analytics;
+    httpSources = 'memory_audit_analytics';
+  }
+
   return {
     config,
     identityMode: production ? 'unconfigured' : 'local_identity',
     auditSink,
+    httpSources,
     services: {
       identity,
       deps: {
         config,
         templates,
-        sources: createInProcessSources({ policy: policy.policy, tools: policy.tools, clock }),
+        sources: createInProcessSources({
+          policy: policy.policy,
+          tools: policy.tools,
+          clock,
+          ...(memory ? { memory } : {}),
+          ...(auditHistory ? { auditHistory } : {}),
+          ...(analytics ? { analytics } : {}),
+        }),
         policyGuard: policy.guard,
         tokenizer: new ApproximateTokenizer(),
         clock,
@@ -102,4 +142,19 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     },
     close: closeAudit,
   };
+}
+
+/** PEM-only loader for start-up (JWKS private material is supported via `loadServicePrivateKey` in tests). */
+function loadPemServicePrivateKey(filePath: string, kidEnv: string | undefined) {
+  const raw = readFileSync(filePath, 'utf8').trim();
+  if (raw.startsWith('{')) {
+    throw new Error(
+      'CONTEXT_SERVICE_PRIVATE_KEY_FILE at start-up must be an Ed25519 PEM private key (JWKS private material is supported in tests only).'
+    );
+  }
+  const key = createPrivateKey(raw);
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new Error('CONTEXT_SERVICE_PRIVATE_KEY_FILE must be an Ed25519 private key.');
+  }
+  return { kid: kidEnv?.trim() || 'bridge-key-1', key };
 }

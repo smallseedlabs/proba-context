@@ -57,10 +57,13 @@ budget:
     analytics: 5
     tools: 6
 
-# Hosts (host or host:port) the service may call. Everything else is refused.
+# Hosts (host or host:port) the service may call. Everything else is refused (SSRF guard).
+# Include every host:port used by MEMORY_API_BASE_URL / AUDIT_API_BASE_URL / REDIS_URL.
 allowedDownstreamHosts:
-  - proba-audit:3100
-  - proba-memory:3200
+  - proba-audit:3400
+  - proba-memory:3420
+  - 127.0.0.1:3400
+  - 127.0.0.1:3420
   # Redis, where the audit stream lives (REDIS_URL must point here).
   - redis:6379
 

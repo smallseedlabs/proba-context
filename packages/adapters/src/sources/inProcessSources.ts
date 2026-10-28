@@ -68,18 +68,32 @@ export interface InProcessSourcesOptions {
   policy: PolicySource;
   tools: ToolCatalogSource;
   clock: Clock;
+  /** When set (Phase 2), replaces the empty memory source. */
+  memory?: MemorySource;
+  /** When set (Phase 2), replaces the empty audit history source. */
+  auditHistory?: AuditHistorySource;
+  /** When set (Phase 2), replaces the empty analytics source. */
+  analytics?: AnalyticsSource;
+  /** Hub conversation source. Left empty until brief 05 Hub adapters land. */
+  conversation?: ConversationSource;
+  /** Hub task source. Defaults to identity-only until Hub adapters land. */
+  task?: TaskStateSource;
 }
 
-/** Policy and tools from the config files, task state from the identity, and no data for the other sources. */
+/**
+ * Policy and tools from the config files, task state from the identity (unless overridden),
+ * and either empty placeholders or the Phase-2 HTTP sources for memory / audit / analytics.
+ * Conversation stays empty until Hub internal endpoints are available.
+ */
 export function createInProcessSources(options: InProcessSourcesOptions): PipelineSources {
   const empty = new FixedEmptySource();
   return {
     policy: options.policy,
-    task: new IdentityTaskSource(options.clock),
-    conversation: empty,
-    memory: empty,
-    auditHistory: empty,
-    analytics: empty,
+    task: options.task ?? new IdentityTaskSource(options.clock),
+    conversation: options.conversation ?? empty,
+    memory: options.memory ?? empty,
+    auditHistory: options.auditHistory ?? empty,
+    analytics: options.analytics ?? empty,
     tools: options.tools,
   };
 }

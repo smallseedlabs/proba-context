@@ -9,7 +9,7 @@ The service reads `CONTEXT_CONFIG_PATH` (default `config/context.config.yaml`) a
 | `sources.<kind>` | One entry per section kind (`policy`, `task`, `conversation`, `memory`, `audit_history`, `analytics`, `tools`): `enabled`, `timeoutMs` (a source that does not answer in time becomes a `source_timeout` gap), `tokenShare` (enabled shares add up to at most 1; a section other than policy, task and tools may use at most this share of the budget). |
 | `cache` | `enabled` (default `false`), `ttlSeconds` (default `0`, must be positive when enabled), `maxEntries`. |
 | `budget` | `defaultTokens`, `maxTokens` (a request's `budgetTokens` is capped by it), and `priorities` per section kind (lower is kept first). Policy, task and tools are never dropped whatever their priority; the others are trimmed in reverse priority order. |
-| `allowedDownstreamHosts` | Hosts (`host` or `host:port`) the service may call. The host of `REDIS_URL` must be listed (`redis:6379` in the shipped file). |
+| `allowedDownstreamHosts` | Hosts (`host` or `host:port`) the service may call (SSRF guard). The hosts of `REDIS_URL`, `MEMORY_API_BASE_URL` and `AUDIT_API_BASE_URL` must be listed (`redis:6379`, `proba-memory:3420`, `proba-audit:3400` in the shipped file). |
 | `limits` | `maxNeedsPerRequest`, `maxItemsPerSource`, `maxItemChars`, `maxRequestBytes`. |
 | `redaction.pii` | Default `true`. Redact email, phone, card, IBAN and SSN as well as secrets. Secrets are always redacted. |
 
@@ -43,5 +43,9 @@ Unknown keys are rejected. The config file's directory also holds everything els
 | `REDIS_URL` | none | Redis that holds the audit stream, for example `redis://:password@redis:6379`. Its host must be in `allowedDownstreamHosts`. Required when `NODE_ENV=production`; without it, outside production, audit events are printed one line each. |
 | `AUDIT_STREAM` | `proba.audit.events` | Stream name (the one the audit consumer reads). |
 | `AUDIT_STREAM_MAXLEN` | `0` (no trimming) | Approximate `MAXLEN` for the stream. |
-| `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN` | none, required by Compose | Credentials for the downstream services. |
+| `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN` | none, required by Compose | Legacy compose placeholders; Phase-2 reads use the service JWT below. |
 | `REDIS_PASSWORD` | none, required by Compose | Password of the Compose Redis, also used in `REDIS_URL`. |
+| `MEMORY_API_BASE_URL` | none | Base URL of memory-api (for example `http://proba-memory:3420`). With `AUDIT_API_BASE_URL` and `CONTEXT_SERVICE_PRIVATE_KEY_FILE`, wires the Phase-2 HTTP memory source. |
+| `AUDIT_API_BASE_URL` | none | Base URL of audit-api (for example `http://proba-audit:3400`). Wires audit history and analytics HTTP sources together with the memory URL and private key. |
+| `CONTEXT_SERVICE_PRIVATE_KEY_FILE` | none | Ed25519 PEM private key the bridge uses to mint service JWTs (`iss=proba-context`, `sub=context-reader`, `aud` = target, ≤2 minutes). |
+| `CONTEXT_SERVICE_KEY_ID` | `bridge-key-1` | `kid` written into the service JWT header. |

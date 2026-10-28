@@ -60,7 +60,12 @@ export class LocalIdentityResolver implements IdentityResolver {
     if (fromHeader === undefined && fromBearer === undefined) {
       throw new IdentityRejectedError('identity_missing', 'No local identity was supplied.');
     }
-    return fromHeader !== undefined ? parseJson(fromHeader) : parseBearer(fromBearer as string);
+    const identity = fromHeader !== undefined ? parseJson(fromHeader) : parseBearer(fromBearer as string);
+    // Forward a caller-supplied X-Act-As so Phase-2 HTTP sources can call audit/memory on a workstation.
+    if (credentials.actAsAssertion?.trim()) {
+      return { ...identity, actAsAssertion: credentials.actAsAssertion.trim() };
+    }
+    return identity;
   }
 }
 

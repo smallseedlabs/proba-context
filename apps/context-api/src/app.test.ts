@@ -217,6 +217,7 @@ describe('production refuses local identity', () => {
     const runtime = createRuntime({ NODE_ENV: 'test' }, configPath);
     expect(runtime.identityMode).toBe('local_identity');
     expect(runtime.auditSink).toBe('log');
+    expect(runtime.httpSources).toBe('none');
   });
 });
 
