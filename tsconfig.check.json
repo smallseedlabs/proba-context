@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@smallseedlabs/proba-context-core": ["packages/core/src/index.ts"],
+      "@smallseedlabs/proba-context-adapters": ["packages/adapters/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*", "apps/*/src/**/*", "scripts/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "**/dist"]
+}
