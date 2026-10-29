@@ -13,19 +13,8 @@ const hostSchema = z
   .min(1)
   .regex(/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/, 'must be a lower-case host name, optionally with :port (no scheme, no path)');
 
-export const sourceConfigSchema = z
-  .object({
-    enabled: z.boolean().default(true),
-    /** Time the source has to answer before the packet is built without it (a `source_timeout` gap). */
-    timeoutMs: z.number().int().positive().max(30_000),
-    /** Share of the token budget this source may use, between 0 and 1. */
-    tokenShare: z.number().min(0).max(1),
-  })
-  .strict();
-
-export type SourceConfig = z.infer<typeof sourceConfigSchema>;
-
-export const cacheConfigSchema = z
+/** Per-source fetch cache. Off by default; `ttlSeconds: 0` means no caching. */
+export const sourceCacheConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     ttlSeconds: z.number().int().nonnegative().max(86_400).default(0),
@@ -37,7 +26,46 @@ export const cacheConfigSchema = z
     path: ['ttlSeconds'],
   });
 
-export type CacheConfig = z.infer<typeof cacheConfigSchema>;
+export type SourceCacheConfig = z.infer<typeof sourceCacheConfigSchema>;
+
+/** @deprecated Prefer {@link sourceCacheConfigSchema}; kept as an alias for older call sites. */
+export const cacheConfigSchema = sourceCacheConfigSchema;
+export type CacheConfig = SourceCacheConfig;
+
+export const sourceConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    /** Time the source has to answer before the packet is built without it (a `source_timeout` gap). */
+    timeoutMs: z.number().int().positive().max(30_000),
+    /** Share of the token budget this source may use, between 0 and 1. */
+    tokenShare: z.number().min(0).max(1),
+    /** Per-source fetch cache. Off by default. */
+    cache: sourceCacheConfigSchema.default({}),
+  })
+  .strict();
+
+export type SourceConfig = z.infer<typeof sourceConfigSchema>;
+
+/**
+ * Shared cache store settings (which adapter backs `ContextCache`).
+ * Per-source enable/TTL live under `sources.<kind>.cache`.
+ */
+export const cacheStoreConfigSchema = z
+  .object({
+    /**
+     * `memory`: in-process LRU (per-replica; document the caveat before enabling in production).
+     * `redis`: shared Redis; requires a password in production and TLS settings via `REDIS_URL` / env.
+     */
+    backend: z.enum(['memory', 'redis']).default('memory'),
+    /**
+     * Allow the in-process cache when `NODE_ENV=production`. Default false: production prefers Redis.
+     * Each replica keeps its own copy when this is true.
+     */
+    allowMemoryInProduction: z.boolean().default(false),
+  })
+  .strict();
+
+export type CacheStoreConfig = z.infer<typeof cacheStoreConfigSchema>;
 
 const priorityShape = Object.fromEntries(SOURCE_NAMES.map((name) => [name, z.number().int().nonnegative()])) as Record<
   (typeof SOURCE_NAMES)[number],
@@ -207,7 +235,8 @@ export const contextConfigSchema = z
     version: z.string().min(1),
     identity: identityConfigSchema,
     sources: z.object(sourcesShape).strict(),
-    cache: cacheConfigSchema.default({}),
+    /** Which adapter backs the shared `ContextCache` (per-source enable lives under each source). */
+    cacheStore: cacheStoreConfigSchema.default({}),
     budget: budgetConfigSchema,
     /** Hosts the service may call (proba-audit, proba-memory, ...). Everything else is refused. */
     allowedDownstreamHosts: z.array(hostSchema).max(32),

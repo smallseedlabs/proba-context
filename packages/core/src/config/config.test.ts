@@ -21,7 +21,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const configDir = join(repoRoot, 'config');
 
 function validConfig(): Record<string, unknown> {
-  const source = (timeoutMs: number, tokenShare: number) => ({ enabled: true, timeoutMs, tokenShare });
+  const source = (timeoutMs: number, tokenShare: number) => ({
+    enabled: true,
+    timeoutMs,
+    tokenShare,
+    cache: { enabled: false, ttlSeconds: 0, maxEntries: 1000 },
+  });
   return {
     version: '1',
     identity: { mode: 'act_as_assertion' },
@@ -34,7 +39,7 @@ function validConfig(): Record<string, unknown> {
       analytics: source(2000, 0.1),
       tools: source(500, 0.1),
     },
-    cache: { enabled: false, ttlSeconds: 0, maxEntries: 1000 },
+    cacheStore: { backend: 'memory', allowMemoryInProduction: false },
     budget: {
       defaultTokens: 6000,
       maxTokens: 12000,
@@ -57,12 +62,19 @@ describe('context config schema', () => {
     expect(config.identity.mode).toBe('act_as_assertion');
     expect(config.identity.allowLocal).toBe(false);
     expect(config.identity.authorizeCache).toEqual({ enabled: false, ttlSeconds: 0 });
-    expect(config.cache.enabled).toBe(false);
+    expect(config.sources.memory.cache.enabled).toBe(false);
+    expect(config.cacheStore.backend).toBe('memory');
   });
 
-  it('defaults the cache to off with no ttl', () => {
-    const config = parseContextConfig(mutate((c) => delete c.cache));
-    expect(config.cache).toEqual({ enabled: false, ttlSeconds: 0, maxEntries: 1000 });
+  it('defaults per-source cache to off with no ttl', () => {
+    const config = parseContextConfig(
+      mutate((c) => {
+        for (const kind of Object.keys(c.sources)) delete c.sources[kind].cache;
+        delete c.cacheStore;
+      })
+    );
+    expect(config.sources.memory.cache).toEqual({ enabled: false, ttlSeconds: 0, maxEntries: 1000 });
+    expect(config.cacheStore).toEqual({ backend: 'memory', allowMemoryInProduction: false });
   });
 
   it('fills in limits that are not given', () => {
@@ -104,7 +116,11 @@ describe('context config schema', () => {
     ['a zero timeout', (c: Record<string, any>) => (c.sources.memory.timeoutMs = 0), /sources\.memory\.timeoutMs/],
     ['a token share above 1', (c: Record<string, any>) => (c.sources.memory.tokenShare = 1.5), /sources\.memory\.tokenShare/],
     ['token shares adding up to more than 1', (c: Record<string, any>) => (c.sources.memory.tokenShare = 0.9), /must not exceed 1/],
-    ['an enabled cache without a ttl', (c: Record<string, any>) => (c.cache = { enabled: true, ttlSeconds: 0 }), /ttlSeconds/],
+    [
+      'an enabled per-source cache without a ttl',
+      (c: Record<string, any>) => (c.sources.memory.cache = { enabled: true, ttlSeconds: 0 }),
+      /ttlSeconds/,
+    ],
     ['a default budget above the maximum', (c: Record<string, any>) => (c.budget.defaultTokens = 20000), /defaultTokens/],
     ['a missing priority', (c: Record<string, any>) => delete c.budget.priorities.tools, /priorities\.tools/],
     ['a downstream host with a scheme', (c: Record<string, any>) => (c.allowedDownstreamHosts = ['https://proba-audit']), /allowedDownstreamHosts\.0/],
@@ -153,10 +169,11 @@ describe('config loader', () => {
     expect(() => parseContextConfigYaml('', 'empty.yaml')).toThrow(ConfigError);
   });
 
-  it('loads the sample config, which has the cache off', () => {
+  it('loads the sample config, which has every source cache off', () => {
     const config = loadContextConfig(join(configDir, 'context.config.yaml'));
-    expect(config.cache.enabled).toBe(false);
-    expect(config.cache.ttlSeconds).toBe(0);
+    expect(config.sources.memory.cache.enabled).toBe(false);
+    expect(config.sources.memory.cache.ttlSeconds).toBe(0);
+    expect(config.cacheStore.backend).toBe('memory');
   });
 
   it('loads the sample policy and tools files', () => {

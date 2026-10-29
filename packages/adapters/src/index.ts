@@ -156,3 +156,13 @@ export {
   RedisStepRoundStore,
   type RedisStepRoundStoreOptions,
 } from './needs/stepRoundStore.js';
+export {
+  MemoryContextCache,
+  MemoryContextCacheRefusedError,
+  RedisContextCache,
+  RedisCachePasswordRequiredError,
+  assertRedisPassword,
+  tlsOptionsFromUrl,
+  type MemoryContextCacheOptions,
+  type RedisContextCacheOptions,
+} from './cache/index.js';

@@ -36,6 +36,7 @@ async function main(): Promise<void> {
         identityMode: runtime.identityMode,
         auditSink: runtime.auditSink,
         httpSources: runtime.httpSources,
+        cacheBackend: runtime.config.cacheStore.backend,
       },
       'configuration loaded'
     );
@@ -44,6 +45,15 @@ async function main(): Promise<void> {
     app.log.error(err);
     process.exit(1);
   }
+
+  process.on('SIGHUP', () => {
+    try {
+      runtime.reloadConfig();
+      app.log.info({ configVersion: runtime.config.version }, 'configuration reloaded on SIGHUP');
+    } catch (err) {
+      app.log.error(err instanceof ConfigError ? err.message : err, 'SIGHUP reload failed; keeping previous config');
+    }
+  });
 
   const shutdown = (signal: string) => {
     app.log.info({ signal }, 'shutting down');

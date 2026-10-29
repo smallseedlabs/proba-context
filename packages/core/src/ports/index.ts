@@ -14,6 +14,8 @@ export type {
   AdminRole,
   AdminSession,
   AuditEmitter,
+  CacheInvalidateFilter,
+  CachedSourcePayload,
   Clock,
   ContextCache,
   IdentityCredentials,

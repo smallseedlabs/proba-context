@@ -13,42 +13,71 @@ identity:
     enabled: false
     ttlSeconds: 0
 
+# Shared ContextCache adapter. Per-source enable/TTL lives under sources.<kind>.cache (off by default).
+cacheStore:
+  # memory: in-process LRU (per-replica). redis: shared via REDIS_URL (password required in production).
+  backend: memory
+  # Set true only when every replica may keep its own copy; documented in CONFIG.md / RUNBOOK.md.
+  allowMemoryInProduction: false
+
 # One entry per section kind. tokenShare of the enabled sources must add up to at most 1.
 sources:
   policy:
     enabled: true
     timeoutMs: 500
     tokenShare: 0.10
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
   task:
     enabled: true
     timeoutMs: 1000
     tokenShare: 0.15
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
   conversation:
     enabled: true
     timeoutMs: 1000
     tokenShare: 0.30
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
   memory:
     enabled: true
     timeoutMs: 1500
     tokenShare: 0.15
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
   audit_history:
     enabled: true
     timeoutMs: 1500
     tokenShare: 0.10
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
   analytics:
     enabled: true
     timeoutMs: 2000
     tokenShare: 0.10
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
   tools:
     enabled: true
     timeoutMs: 500
     tokenShare: 0.10
-
-# Packets are built fresh for every request unless the cache is switched on.
-cache:
-  enabled: false
-  ttlSeconds: 0
-  maxEntries: 1000
+    cache:
+      enabled: false
+      ttlSeconds: 0
+      maxEntries: 1000
 
 budget:
   defaultTokens: 6000
@@ -72,7 +101,7 @@ allowedDownstreamHosts:
   - 127.0.0.1:3400
   - 127.0.0.1:3420
   - 127.0.0.1:3300
-  # Redis, where the audit stream lives (REDIS_URL must point here).
+  # Redis, where the audit stream and optional source cache live (REDIS_URL must point here).
   - redis:6379
 
 limits:
