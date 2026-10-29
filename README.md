@@ -6,7 +6,7 @@ The request and packet shapes (`ContextRequest`, `ContextPacket`) come from [`@s
 
 ## Status
 
-Phase 1 (core pipeline). `POST /v1/context/build` builds a packet from the template, typed needs, the config-file policy and tool catalog, and the caller's identity, with redaction, scope filtering, budgeting, a deterministic `packetHash` and `context.*` audit events on a Redis stream. The conversation, memory, audit history and analytics sources are not connected yet and return nothing, so those sections are empty and analytics reports a gap. Production has no identity verification yet and refuses context requests (see [docs/DESIGN.md](docs/DESIGN.md)).
+Context bridge through Phase 3. `POST /v1/context/build` verifies a Hub act-as assertion (or local identity on a workstation), authorises via Hub `POST /v1/internal/authorize`, and builds a packet from templates, typed needs, config-file policy/tools, and Phase-2 HTTP sources (memory, audit, analytics, Hub task/conversation) with redaction, scope filtering, budgeting, a deterministic `packetHash` and `context.*` audit events. Admin `GET /v1/context/packets*` serve manifests only (Firebase allow-list). See [docs/DESIGN.md](docs/DESIGN.md), [docs/SCOPING.md](docs/SCOPING.md) and [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Layout
 
@@ -50,6 +50,8 @@ curl http://127.0.0.1:3500/health
 | GET | `/health` | `{ "status": "ok", "service": "context-api" }` |
 | POST | `/v1/context/build` | `ContextRequest` in, `ContextPacket` out |
 | GET | `/v1/context/needs?stepType=` | Need kinds the brain may ask for in that step |
+| GET | `/v1/context/packets?goalId=` | Admin: packet manifests for a goal |
+| GET | `/v1/context/packets/{id}` | Admin: one packet manifest |
 
 ## Configuration
 

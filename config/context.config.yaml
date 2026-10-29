@@ -3,9 +3,15 @@
 version: "1"
 
 identity:
-  # act_as_assertion: verify the Hub-minted X-Act-As assertion.
-  # firebase_passthrough: verify the caller's Firebase ID token.
+  # act_as_assertion: verify the Hub-minted assertion (Authorization Bearer or X-Act-As).
+  # firebase_passthrough: verify the caller's Firebase ID token (interactive only; disabled unless configured).
   mode: act_as_assertion
+  # Workstation/tests only. Ignored (and refused) when NODE_ENV=production.
+  allowLocal: false
+  # Cache Hub POST /v1/internal/authorize answers. Off by default.
+  authorizeCache:
+    enabled: false
+    ttlSeconds: 0
 
 # One entry per section kind. tokenShare of the enabled sources must add up to at most 1.
 sources:

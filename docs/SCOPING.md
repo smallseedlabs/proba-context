@@ -4,17 +4,15 @@ How every packet is scoped to the caller. Pipeline enforcement is described in [
 
 - **Workspace.** Taken from the identity, never from the request body. Every source query carries it, and items whose `data.workspaceId` differs are dropped after the fetch (`context.scope_violation`).
 - **User, goal, thread.** Taken from the identity and checked against the request: a mismatch fails the build with 403 `identity_mismatch`. Items whose `data.userId` differs are dropped after the fetch.
+- **Identity (Phase 3).**
+  - **`act_as_assertion` (default).** The Hub's act-as JWT is taken from `Authorization: Bearer` (how the Hub's ContextClient calls the bridge) or `X-Act-As`. Verified as EdDSA, `iss=proba-hub`, `aud` containing `proba-context`, lifetime ≤ 5 minutes, clock skew ≤ 30s; expired, wrong issuer, not-yet-valid (`nbf`) and forged assertions are refused. Each assertion `jti` is claimed in Redis (production) or an in-memory store (non-production only; memory refused in production) for the remainder of its life — a replay is `act_as_replayed`. After verification the bridge calls Hub `POST /v1/internal/authorize` with the service JWT and the same assertion; answers are cached only when `identity.authorizeCache.enabled` is true.
+  - **`firebase_passthrough`.** Interactive only. Verifies the caller's Firebase ID token (same checks as audit-api) and builds an equivalent identity from the request body's `workspaceId` / `goalId` / `threadId`. Disabled unless `identity.mode` is `firebase_passthrough` and `FIREBASE_PROJECT_ID` is set.
+  - **Local identity.** `Bearer local:…` / `X-Local-Identity` for workstations and automated checks only: allowed solely when `NODE_ENV!=production` **and** `identity.allowLocal` / `CONTEXT_ALLOW_LOCAL_IDENTITY`. Production always refuses it (constructor, resolve, and runtime wiring).
 - **Downstream reads (Phase 2).** HTTP adapters for memory-api, audit-api and Hub send `actorId` / `workspaceId` (and `goalId` on Hub routes) taken only from the verified identity, plus the bridge service JWT (`aud` = target) and the forwarded `X-Act-As`. Adapters drop canary rows that name another user, workspace or thread before items reach the pipeline; the pipeline re-filters again.
   - Memory: `POST /v1/memories/search`, `GET /v1/profiles`
   - Audit / analytics: `GET /v1/events`, `GET /v1/traces/{id}`, analytics campaigns / summary / compare
-  - Hub: `GET /v1/internal/goals/{goalId}/state`, `GET /v1/internal/threads/{threadId}/messages`
+  - Hub: `GET /v1/internal/goals/{goalId}/state`, `GET /v1/internal/threads/{threadId}/messages`, `POST /v1/internal/authorize`
 - **Downstream hosts.** Only hosts in `allowedDownstreamHosts` are called (SSRF guard on every request).
 - **Item trust.** Each item carries a trust level (`system`, `user`, `derived`, `external`); `external` content is never treated as an instruction. A source cannot raise trust above its section's ceiling (conversation: `user`; memory, audit history, analytics: `derived`).
-- **Local identity.** Unverified and for workstations and tests only; refused when `NODE_ENV=production`. May forward a supplied `X-Act-As` so HTTP sources can call upstream on a workstation.
-- **Audit.** Audit details carry ids and counts, never item text. Without an audit record no packet is returned.
-
-## To be defined (Phase 3)
-
-- Act-as assertion verification (`aud` contains `proba-context`) and Hub `POST /v1/internal/authorize`.
-- Scope names and the sections each one grants.
-- Production removal of local identity from the real path (kept only behind `NODE_ENV!=production`).
+- **Admin routes.** `GET /v1/context/packets` and `GET /v1/context/packets/{id}` use Firebase ID tokens and the allow-list model of audit-api (`CONTEXT_API_ADMIN_EMAILS`, `CONTEXT_API_ALLOWED_EMAILS`, `CONTEXT_API_ALLOWED_EMAIL_DOMAINS`). Viewers get 403; admins see the **manifest only** (never item text). Refusals are audited as `auth.denied`; successful views as `context.packet_viewed`.
+- **Audit.** Audit details carry ids and counts, never item text. Without an audit record no packet is returned. 401/403 identity failures are audited as `auth.denied` with `context.*` builds still emitting their own events. Scope violations are counted on the process and raised as `context.scope_violation`.

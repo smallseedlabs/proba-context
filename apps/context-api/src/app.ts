@@ -1,18 +1,32 @@
+import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from 'fastify';
+import Fastify, {
+  type FastifyError,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  type FastifyServerOptions,
+} from 'fastify';
 import {
   ContextBuildError,
   IdentityRejectedError,
   NEED_KINDS,
   NEED_SECTION,
+  buildAuditEvent,
   buildContext,
   contextRequestSchema,
+  generateSpanId,
+  getAuditActionInfo,
   stepTypeSchema,
+  type AdminAuthorizer,
+  type AdminSession,
   type ContextBuildErrorCode,
   type ContextConfig,
   type IdentityCredentials,
   type IdentityResolver,
+  type PacketStore,
   type PipelineDeps,
+  type RateLimiter,
   type ResolvedIdentity,
 } from '@smallseedlabs/proba-context-core';
 
@@ -23,10 +37,18 @@ export interface HealthResponse {
   service: typeof SERVICE_NAME;
 }
 
-/** What the context routes need: the pipeline's dependencies and a way to turn credentials into an identity. */
+/** What the context routes need. */
 export interface ContextServices {
   deps: PipelineDeps;
   identity: IdentityResolver;
+  rateLimiter: RateLimiter;
+  rateLimit: { max: number; windowMs: number };
+  packetStore: PacketStore;
+  admin?: AdminAuthorizer;
+  /** Empty = CORS disabled (strict default). */
+  corsOrigins: string[];
+  /** Running total of scope violations observed on this process. */
+  scopeViolationCount: { value: number };
 }
 
 const BUILD_ERROR_STATUS: Record<ContextBuildErrorCode, number> = {
@@ -44,7 +66,7 @@ function header(request: FastifyRequest, name: string): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function credentialsOf(request: FastifyRequest): IdentityCredentials {
+function credentialsOf(request: FastifyRequest, body?: Record<string, unknown>): IdentityCredentials {
   const credentials: IdentityCredentials = {};
   const authorization = header(request, 'authorization');
   const actAs = header(request, 'x-act-as');
@@ -52,6 +74,14 @@ function credentialsOf(request: FastifyRequest): IdentityCredentials {
   if (authorization !== undefined) credentials.authorization = authorization;
   if (actAs !== undefined) credentials.actAsAssertion = actAs;
   if (local !== undefined) credentials.localIdentity = local;
+  if (body) {
+    credentials.scope = {
+      ...(typeof body.workspaceId === 'string' ? { workspaceId: body.workspaceId } : {}),
+      ...(typeof body.userId === 'string' ? { userId: body.userId } : {}),
+      ...(typeof body.goalId === 'string' ? { goalId: body.goalId } : {}),
+      ...(typeof body.threadId === 'string' ? { threadId: body.threadId } : {}),
+    };
+  }
   return credentials;
 }
 
@@ -64,8 +94,7 @@ export function bodyLimitOf(config: ContextConfig): number {
 export const CONTEXT_ROUTE_RATE_LIMIT = { max: 60, timeWindow: '1 minute' } as const;
 
 /**
- * Builds the HTTP app. `GET /health` is always served. The context routes (`POST /v1/context/build`,
- * `GET /v1/context/needs`) are registered when `services` is given.
+ * Builds the HTTP app. `GET /health` is always served. Context and admin routes register when `services` is given.
  */
 export async function buildApp(
   options: FastifyServerOptions = {},
@@ -76,8 +105,22 @@ export async function buildApp(
     ...options,
   });
 
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('Cache-Control', 'no-store');
+    return payload;
+  });
+
+  if (services && services.corsOrigins.length > 0) {
+    await app.register(cors, {
+      origin: services.corsOrigins,
+      credentials: false,
+      methods: ['GET', 'POST', 'OPTIONS'],
+    });
+  }
+
   app.setErrorHandler((err: FastifyError, _request, reply) => {
-    const statusCode = typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
+    const statusCode =
+      typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
     if (statusCode >= 500) {
       app.log.error({ err }, 'request failed');
       return reply.status(500).send({ error: { code: 'internal_error', message: 'The request could not be completed.' } });
@@ -94,29 +137,81 @@ export async function buildApp(
 async function registerContextRoutes(app: FastifyInstance, services: ContextServices): Promise<void> {
   const { deps } = services;
 
-  // Rate-limit authenticated routes (CodeQL + production hardening). Health stays uncapped.
   await app.register(rateLimit, {
     global: false,
     max: CONTEXT_ROUTE_RATE_LIMIT.max,
     timeWindow: CONTEXT_ROUTE_RATE_LIMIT.timeWindow,
     addHeadersOnExceeding: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true },
-    addHeaders: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true, 'retry-after': true },
+    addHeaders: {
+      'x-ratelimit-limit': true,
+      'x-ratelimit-remaining': true,
+      'x-ratelimit-reset': true,
+      'retry-after': true,
+    },
   });
 
-  async function authenticate(request: FastifyRequest): Promise<ResolvedIdentity> {
-    return services.identity.resolve(credentialsOf(request));
+  async function authenticate(request: FastifyRequest, body?: Record<string, unknown>): Promise<ResolvedIdentity> {
+    return services.identity.resolve(credentialsOf(request, body));
+  }
+
+  async function applyCallerLimits(reply: FastifyReply, identity: ResolvedIdentity, callerKey: string): Promise<boolean> {
+    const { max, windowMs } = services.rateLimit;
+    const caller = await services.rateLimiter.hit(`caller:${callerKey}`, max, windowMs);
+    const user = await services.rateLimiter.hit(`user:${identity.userId}`, max, windowMs);
+    const decision = !caller.allowed ? caller : !user.allowed ? user : caller;
+    reply.header('X-RateLimit-Limit', String(decision.limit)).header('X-RateLimit-Remaining', String(decision.remaining));
+    if (!caller.allowed || !user.allowed) {
+      reply.header('Retry-After', String(decision.retryAfterSeconds));
+      await reply.status(429).send({ error: { code: 'rate_limited', message: 'Too many requests. Try again shortly.' } });
+      return false;
+    }
+    return true;
+  }
+
+  async function auditAuthFailure(
+    code: string,
+    status: number,
+    identity?: Pick<ResolvedIdentity, 'workspaceId' | 'userId' | 'goalId' | 'threadId'>
+  ): Promise<void> {
+    const info = getAuditActionInfo('auth.denied');
+    const event = buildAuditEvent({
+      eventId: crypto.randomUUID(),
+      traceId: crypto.randomUUID(),
+      spanId: generateSpanId(),
+      workspaceId: identity?.workspaceId ?? 'seedbed',
+      ...(identity?.userId ? { userId: identity.userId } : {}),
+      ...(identity?.goalId ? { goalId: identity.goalId } : {}),
+      ...(identity?.threadId ? { threadId: identity.threadId } : {}),
+      actor: { type: 'service', id: SERVICE_NAME },
+      service: SERVICE_NAME,
+      action: 'auth.denied',
+      category: info?.category ?? 'auth',
+      ...(info ? { riskLevel: info.riskLevel } : {}),
+      outcome: 'denied',
+      errorCode: code,
+      occurredAt: deps.clock.now().toISOString(),
+      details: { counts: { httpStatus: status }, reason: code },
+    });
+    try {
+      await deps.audit.emit(event);
+    } catch {
+      // Auth failure response still goes out; audit is best-effort for pre-identity denials.
+    }
   }
 
   app.post(
     '/v1/context/build',
     { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
     async (request, reply) => {
+      const rawBody = (request.body ?? {}) as Record<string, unknown>;
       let identity: ResolvedIdentity;
       try {
-        identity = await authenticate(request);
+        identity = await authenticate(request, rawBody);
       } catch (err) {
-        return identityFailure(reply, err);
+        return identityFailure(reply, err, (code, status) => auditAuthFailure(code, status));
       }
+
+      if (!(await applyCallerLimits(reply, identity, request.ip))) return;
 
       const parsed = contextRequestSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -131,10 +226,34 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
 
       try {
         const packet = await buildContext(deps, parsed.data, identity);
+        const scopeDrops = Object.values(packet.manifest.sources).reduce(
+          (sum, s) => sum + (s.droppedReasons?.scope_violation ?? 0),
+          0
+        );
+        if (scopeDrops > 0) services.scopeViolationCount.value += scopeDrops;
+
+        await services.packetStore.put({
+          packetId: packet.packetId,
+          packetHash: packet.packetHash,
+          workspaceId: packet.workspaceId,
+          userId: packet.userId,
+          goalId: packet.goalId,
+          stepId: packet.stepId,
+          configVersion: packet.configVersion,
+          templateVersion: packet.templateVersion,
+          manifest: packet.manifest,
+          createdAt: deps.clock.now().toISOString(),
+        });
+
         return reply.status(200).send(packet);
       } catch (err) {
         if (err instanceof ContextBuildError) {
-          if (err.code === 'internal_error' || err.code === 'audit_unavailable') app.log.error({ err }, 'context build failed');
+          if (err.code === 'identity_mismatch') {
+            await auditAuthFailure(err.code, 403, identity);
+          }
+          if (err.code === 'internal_error' || err.code === 'audit_unavailable') {
+            app.log.error({ err }, 'context build failed');
+          }
           return reply.status(BUILD_ERROR_STATUS[err.code]).send({ error: { code: err.code, message: err.message } });
         }
         throw err;
@@ -146,15 +265,21 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
     '/v1/context/needs',
     { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
     async (request, reply) => {
+      let identity: ResolvedIdentity;
       try {
-        await authenticate(request);
+        identity = await authenticate(request);
       } catch (err) {
-        return identityFailure(reply, err);
+        return identityFailure(reply, err, (code, status) => auditAuthFailure(code, status));
       }
+      if (!(await applyCallerLimits(reply, identity, request.ip))) return;
+
       const step = stepTypeSchema.safeParse((request.query as { stepType?: unknown }).stepType);
       if (!step.success) {
         return reply.status(400).send({
-          error: { code: 'invalid_request', message: `stepType must be one of: ${stepTypeSchema.options.join(', ')}.` },
+          error: {
+            code: 'invalid_request',
+            message: `stepType must be one of: ${stepTypeSchema.options.join(', ')}.`,
+          },
         });
       }
       const allowedNeeds = NEED_KINDS.filter(
@@ -167,12 +292,172 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
       });
     }
   );
+
+  app.get(
+    '/v1/context/packets',
+    { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
+    async (request, reply) => {
+      const session = await requireAdmin(request, reply, services);
+      if (!session) return;
+
+      const query = request.query as { goalId?: string; limit?: string; cursor?: string };
+      if (!query.goalId?.trim()) {
+        return reply.status(400).send({ error: { code: 'invalid_request', message: 'goalId is required.' } });
+      }
+      const limit = query.limit ? Number(query.limit) : undefined;
+      const listed = await services.packetStore.listByGoal(query.goalId.trim(), {
+        ...(Number.isInteger(limit) ? { limit } : {}),
+        ...(query.cursor ? { cursor: query.cursor } : {}),
+      });
+      await auditPacketView(deps, session, { goalId: query.goalId, counts: { packets: listed.items.length } });
+      return reply.status(200).send({
+        items: listed.items.map(manifestOnly),
+        ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}),
+      });
+    }
+  );
+
+  app.get(
+    '/v1/context/packets/:packetId',
+    { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
+    async (request, reply) => {
+      const session = await requireAdmin(request, reply, services);
+      if (!session) return;
+
+      const packetId = (request.params as { packetId: string }).packetId;
+      const record = await services.packetStore.get(packetId);
+      if (!record) {
+        return reply.status(404).send({ error: { code: 'not_found', message: 'Packet not found.' } });
+      }
+      await auditPacketView(deps, session, {
+        packetId: record.packetId,
+        goalId: record.goalId,
+        workspaceId: record.workspaceId,
+      });
+      return reply.status(200).send(manifestOnly(record));
+    }
+  );
 }
 
-function identityFailure(reply: FastifyReply, err: unknown) {
+function manifestOnly(record: {
+  packetId: string;
+  packetHash: string;
+  workspaceId: string;
+  userId: string;
+  goalId: string;
+  stepId: string;
+  configVersion: string;
+  templateVersion: string;
+  manifest: unknown;
+  createdAt: string;
+}) {
+  return {
+    packetId: record.packetId,
+    packetHash: record.packetHash,
+    workspaceId: record.workspaceId,
+    userId: record.userId,
+    goalId: record.goalId,
+    stepId: record.stepId,
+    configVersion: record.configVersion,
+    templateVersion: record.templateVersion,
+    manifest: record.manifest,
+    createdAt: record.createdAt,
+  };
+}
+
+async function requireAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  services: ContextServices
+): Promise<AdminSession | undefined> {
+  if (!services.admin) {
+    await reply.status(503).send({ error: { code: 'admin_unconfigured', message: 'Admin routes are not configured.' } });
+    return undefined;
+  }
+  let session: AdminSession;
+  try {
+    session = await services.admin.authorize(header(request, 'authorization'));
+  } catch (err) {
+    if (err instanceof IdentityRejectedError) {
+      const status =
+        err.code === 'not_allowed' || err.code === 'email_not_verified' || err.code === 'email_required' ? 403 : 401;
+      await auditAuthDenied(services, err.code, status);
+      await reply.status(status).send({ error: { code: err.code, message: err.message } });
+      return undefined;
+    }
+    throw err;
+  }
+  if (session.role !== 'admin') {
+    await auditAuthDenied(services, 'insufficient_role', 403, session);
+    await reply.status(403).send({
+      error: { code: 'insufficient_role', message: 'This needs an administrator account.' },
+    });
+    return undefined;
+  }
+  return session;
+}
+
+async function auditAuthDenied(
+  services: ContextServices,
+  code: string,
+  status: number,
+  session?: AdminSession
+): Promise<void> {
+  const info = getAuditActionInfo('auth.denied');
+  const event = buildAuditEvent({
+    eventId: crypto.randomUUID(),
+    traceId: crypto.randomUUID(),
+    spanId: generateSpanId(),
+    workspaceId: 'seedbed',
+    actor: { type: 'user', id: session?.subject ?? 'anonymous' },
+    service: SERVICE_NAME,
+    action: 'auth.denied',
+    category: info?.category ?? 'auth',
+    ...(info ? { riskLevel: info.riskLevel } : {}),
+    outcome: 'denied',
+    errorCode: code,
+    occurredAt: services.deps.clock.now().toISOString(),
+    details: { counts: { httpStatus: status }, reason: code },
+  });
+  try {
+    await services.deps.audit.emit(event);
+  } catch {
+    // best-effort
+  }
+}
+
+async function auditPacketView(
+  deps: PipelineDeps,
+  session: AdminSession,
+  details: Record<string, unknown>
+): Promise<void> {
+  const info = getAuditActionInfo('context.packet_viewed');
+  const event = buildAuditEvent({
+    eventId: crypto.randomUUID(),
+    traceId: crypto.randomUUID(),
+    spanId: generateSpanId(),
+    workspaceId: typeof details.workspaceId === 'string' ? details.workspaceId : 'seedbed',
+    ...(typeof details.goalId === 'string' ? { goalId: details.goalId } : {}),
+    actor: { type: 'user', id: session.subject },
+    service: SERVICE_NAME,
+    action: 'context.packet_viewed',
+    category: info?.category ?? 'data_access',
+    ...(info ? { riskLevel: info.riskLevel } : {}),
+    outcome: 'success',
+    occurredAt: deps.clock.now().toISOString(),
+    details: { ...details, role: session.role },
+  });
+  await deps.audit.emit(event);
+}
+
+function identityFailure(
+  reply: FastifyReply,
+  err: unknown,
+  audit: (code: string, status: number) => Promise<void>
+) {
   if (err instanceof IdentityRejectedError) {
-    // Without a configured verifier the service cannot say who the caller is, which is a server-side condition.
-    const status = err.code === 'identity_unconfigured' ? 503 : 401;
+    const status = err.code === 'identity_unconfigured' ? 503 : err.code === 'authorize_denied' ? 403 : 401;
+    void audit(err.code, status);
     return reply.status(status).send({ error: { code: err.code, message: err.message } });
   }
   throw err;

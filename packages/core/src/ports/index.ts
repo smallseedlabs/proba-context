@@ -10,11 +10,19 @@ export type {
   ToolCatalogSource,
 } from './sources.js';
 export type {
+  AdminAuthorizer,
+  AdminRole,
+  AdminSession,
   AuditEmitter,
   Clock,
   ContextCache,
   IdentityCredentials,
   IdentityResolver,
+  JtiStore,
+  PacketRecord,
+  PacketStore,
+  RateLimitDecision,
+  RateLimiter,
   Tokenizer,
 } from './infrastructure.js';
 export type { NeedDecision, PolicyGuard } from './policyGuard.js';
