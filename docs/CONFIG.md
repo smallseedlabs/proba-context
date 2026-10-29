@@ -11,8 +11,9 @@ The service reads `CONTEXT_CONFIG_PATH` (default `config/context.config.yaml`) a
 | `sources.<kind>` | One entry per section kind (`policy`, `task`, `conversation`, `memory`, `audit_history`, `analytics`, `tools`): `enabled`, `timeoutMs` (a source that does not answer in time becomes a `source_timeout` gap), `tokenShare` (enabled shares add up to at most 1; a section other than policy, task and tools may use at most this share of the budget), and `cache` (see below). |
 | `sources.<kind>.cache` | Per-source fetch cache: `enabled` (default `false`), `ttlSeconds` (default `0`; must be positive when enabled), `maxEntries`. Off by default; zero TTL means no caching. |
 | `cacheStore` | Shared `ContextCache` adapter: `backend` (`memory` \| `redis`, default `memory`) and `allowMemoryInProduction` (default `false`). Redis uses `REDIS_URL` (password required in production; TLS via `rediss://` or `REDIS_TLS=true`). In-process cache is per-replica — set `allowMemoryInProduction: true` only when that caveat is acceptable. |
+| `packetStore` | Postgres manifest retention: `retentionDays` (default `7`) and `purgeIntervalMinutes` (default `60`; `0` disables the in-process purge timer). Manifests never include item text. |
 | `budget` | `defaultTokens`, `maxTokens` (a request's `budgetTokens` is capped by it), and `priorities` per section kind (lower is kept first). Policy, task and tools are never dropped whatever their priority; the others are trimmed in reverse priority order. |
-| `allowedDownstreamHosts` | Hosts (`host` or `host:port`) the service may call (SSRF guard). The hosts of `REDIS_URL`, `MEMORY_API_BASE_URL`, `AUDIT_API_BASE_URL` and `HUB_BASE_URL` must be listed (`redis:6379`, `proba-memory:3420`, `proba-audit:3400`, `proba-hub:3300` in the shipped file). |
+| `allowedDownstreamHosts` | Hosts (`host` or `host:port`) the service may call (SSRF guard). The hosts of `REDIS_URL`, `DATABASE_URL`, `MEMORY_API_BASE_URL`, `AUDIT_API_BASE_URL` and `HUB_BASE_URL` must be listed (`redis:6379`, `postgres:5432`, `proba-memory:3420`, `proba-audit:3400`, `proba-hub:3300` in the shipped file). |
 | `limits` | `maxNeedsPerRequest`, `maxItemsPerSource`, `maxItemChars`, `maxRequestBytes`. |
 | `needs` | Hybrid needs loop (defaults applied when omitted): `maxRoundsPerStep` (default `2`), `extraTokenShare` (default `0.3`), and `kinds.<needKind>` with `source`, `maxItems`, `maxTokens`, and for `analytics_compare` `allowedWindows`. See [NEEDS](NEEDS.md). |
 | `redaction.pii` | Default `true`. Redact email, phone, card, IBAN and SSN as well as secrets. Secrets are always redacted. |
@@ -43,8 +44,10 @@ Unknown keys are rejected. The config file's directory also holds everything els
 | `HOST` | `0.0.0.0` | Listen address inside the container; Compose publishes it on `127.0.0.1` only. |
 | `LOG_LEVEL` | `info` | Log level. |
 | `CONTEXT_CONFIG_PATH` | `config/context.config.yaml` | Config file. Templates, policy and tools are read from its directory. |
-| `NODE_ENV` | unset | `production` (the container default) refuses local identities and in-memory rate/jti/packet stores; requires `REDIS_URL` and assertion wiring. |
-| `REDIS_URL` | none | Redis for the audit stream, jti store, rate limits, packet manifests and (when `cacheStore.backend: redis`) the source cache. Host must be in `allowedDownstreamHosts`. Required when `NODE_ENV=production`. Production refuses a passwordless URL for the Redis cache. |
+| `NODE_ENV` | unset | `production` (the container default) refuses local identities and in-memory rate/jti/packet stores; requires `REDIS_URL`, `DATABASE_URL` and assertion wiring. |
+| `DATABASE_URL` | none | Postgres for packet manifests (`context_packets`). Host must be in `allowedDownstreamHosts`. Required when `NODE_ENV=production`. |
+| `POSTGRES_PASSWORD` | none, required by Compose | Password of the Compose Postgres, also used in `DATABASE_URL`. |
+| `REDIS_URL` | none | Redis for the audit stream, jti store, rate limits and (when `cacheStore.backend: redis`) the source cache. Host must be in `allowedDownstreamHosts`. Required when `NODE_ENV=production`. Production refuses a passwordless URL for the Redis cache. |
 | `REDIS_TLS` | unset | When `true`/`1`, enable TLS for Redis even on `redis://` URLs. Prefer `rediss://`. |
 | `REDIS_TLS_REJECT_UNAUTHORIZED` | unset (`1` behaviour) | Set to `0` only when a private CA is not yet wired (not for production). |
 | `AUDIT_STREAM` | `proba.audit.events` | Stream name (the one the audit consumer reads). |

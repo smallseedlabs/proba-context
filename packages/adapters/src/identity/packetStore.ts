@@ -4,7 +4,7 @@ import type { Clock, PacketRecord, PacketStore } from '@smallseedlabs/proba-cont
 /** Thrown when an in-memory packet store is created in production. */
 export class MemoryPacketStoreRefusedError extends Error {
   constructor() {
-    super('The in-memory packet store is not allowed when NODE_ENV=production: use Redis.');
+    super('The in-memory packet store is not allowed when NODE_ENV=production: use Postgres (DATABASE_URL).');
     this.name = 'MemoryPacketStoreRefusedError';
   }
 }
@@ -49,6 +49,26 @@ export class MemoryPacketStore implements PacketStore {
     const items = slice.map((id) => this.byId.get(id)).filter((r): r is PacketRecord => r !== undefined);
     const next = ids[start + limit];
     return next ? { items, nextCursor: next } : { items };
+  }
+
+  async purgeExpired(olderThan: Date): Promise<number> {
+    let removed = 0;
+    for (const [id, record] of this.byId) {
+      if (new Date(record.createdAt).getTime() < olderThan.getTime()) {
+        this.byId.delete(id);
+        removed += 1;
+      }
+    }
+    for (const [goalId, ids] of this.byGoal) {
+      const next = ids.filter((id) => this.byId.has(id));
+      if (next.length === 0) this.byGoal.delete(goalId);
+      else this.byGoal.set(goalId, next);
+    }
+    return removed;
+  }
+
+  async ping(): Promise<void> {
+    // In-process store is always reachable.
   }
 
   async close(): Promise<void> {
@@ -129,6 +149,17 @@ export class RedisPacketStore implements PacketStore {
     }
     const next = ids[start + limit];
     return next ? { items, nextCursor: next } : { items };
+  }
+
+  async purgeExpired(_olderThan: Date): Promise<number> {
+    // Redis entries expire via TTL set on put; no bulk scan here.
+    return 0;
+  }
+
+  async ping(): Promise<void> {
+    if (this.client.status !== 'ready') await this.client.connect();
+    const pong = await this.client.ping();
+    if (pong !== 'PONG') throw new Error('Redis packet store ping failed');
   }
 
   async close(): Promise<void> {

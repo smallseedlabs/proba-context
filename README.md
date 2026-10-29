@@ -6,7 +6,7 @@ The request and packet shapes (`ContextRequest`, `ContextPacket`) come from [`@s
 
 ## Status
 
-Context bridge through Phase 5. `POST /v1/context/build` verifies a Hub act-as assertion (or local identity on a workstation), authorises via Hub `POST /v1/internal/authorize`, and builds a packet from templates, typed needs (hybrid loop with round and extra-token caps), config-file policy/tools, and Phase-2 HTTP sources (memory, audit, analytics, Hub task/conversation) with redaction, scope filtering, budgeting, optional per-source caching (off by default), a deterministic `packetHash` and `context.*` audit events. `GET /v1/context/needs` lists allowed need kinds with limits. Admin packet and cache-invalidate routes use the Firebase allow-list. Prometheus `/metrics`, `/ready`, and SIGHUP config reload are available. See [docs/DESIGN.md](docs/DESIGN.md), [docs/NEEDS.md](docs/NEEDS.md), [docs/SCOPING.md](docs/SCOPING.md) and [docs/CONFIG.md](docs/CONFIG.md).
+Context bridge through Phase 6. `POST /v1/context/build` verifies a Hub act-as assertion (or local identity on a workstation), authorises via Hub `POST /v1/internal/authorize`, and builds a packet from templates, typed needs, config-file policy/tools, and HTTP sources with redaction, scope filtering, budgeting, optional per-source caching (off by default), a deterministic `packetHash` and `context.*` audit events. Packet manifests are stored in Postgres (`context_packets`, never item text). Admin packet and cache-invalidate routes use the Firebase allow-list. Prometheus `/metrics`, `/ready`, and SIGHUP config reload are available. See [docs/DESIGN.md](docs/DESIGN.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/WALKTHROUGHS.md](docs/WALKTHROUGHS.md) and [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Layout
 
@@ -16,8 +16,9 @@ Context bridge through Phase 5. `POST /v1/context/build` verifies a Hub act-as a
 | `packages/adapters` | `@smallseedlabs/proba-context-adapters`: config-file policy and tools, tokenizer, clock, Redis stream audit emitter, local identity |
 | `apps/context-api` | Fastify service, port 3500 |
 | `config/` | `context.config.yaml`, `policy.yaml`, `tools.yaml`, and `templates/` (one versioned file per step type) |
-| `docs/` | [DESIGN](docs/DESIGN.md), [WALKTHROUGH_RAISE_BUDGET](docs/WALKTHROUGH_RAISE_BUDGET.md), [CONFIG](docs/CONFIG.md), [SCOPING](docs/SCOPING.md), [RUNBOOK](docs/RUNBOOK.md) |
-| `scripts/` | `check-compose-security.mjs`, `bench-context.mjs` |
+| `docs/` | [DESIGN](docs/DESIGN.md), [WALKTHROUGHS](docs/WALKTHROUGHS.md), [WALKTHROUGH_RAISE_BUDGET](docs/WALKTHROUGH_RAISE_BUDGET.md), [CONFIG](docs/CONFIG.md), [SCOPING](docs/SCOPING.md), [RUNBOOK](docs/RUNBOOK.md), [THREAT_MODEL](docs/THREAT_MODEL.md) |
+| `migrations/postgres/` | `context_packets` schema |
+| `scripts/` | `check-compose-security.mjs`, `bench-context.mjs`, `verify-context.sh` |
 
 ## Run
 
@@ -34,7 +35,7 @@ Outside production the service accepts a local identity (`Authorization: Bearer 
 With Docker (Compose refuses to start until the credentials are set; the port is published on `127.0.0.1` only):
 
 ```bash
-export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=... REDIS_PASSWORD=...
+export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=... REDIS_PASSWORD=... POSTGRES_PASSWORD=...
 docker compose up --build -d
 curl http://127.0.0.1:3500/health
 ```
@@ -66,9 +67,10 @@ curl http://127.0.0.1:3500/health
 | `HOST` | `0.0.0.0` | Listen address (inside the container) |
 | `LOG_LEVEL` | `info` | Log level |
 | `CONTEXT_CONFIG_PATH` | `config/context.config.yaml` | Config file |
-| `NODE_ENV` | unset (`production` in the container) | `production` refuses local identities and requires `REDIS_URL` |
+| `NODE_ENV` | unset (`production` in the container) | `production` refuses local identities and requires `REDIS_URL` + `DATABASE_URL` |
 | `REDIS_URL` | none | Redis for the audit stream `proba.audit.events` |
-| `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN`, `REDIS_PASSWORD` | none | Required by Compose |
+| `DATABASE_URL` | none | Postgres for packet manifests (`context_packets`) |
+| `AUDIT_API_TOKEN`, `MEMORY_API_TOKEN`, `REDIS_PASSWORD`, `POSTGRES_PASSWORD` | none | Required by Compose |
 
 ## Develop
 

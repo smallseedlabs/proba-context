@@ -173,6 +173,12 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
       } catch {
         checks.cache = 'fail';
       }
+      try {
+        await services.packetStore.ping?.();
+        checks.packetStore = 'ok';
+      } catch {
+        checks.packetStore = 'fail';
+      }
       const ready = Object.values(checks).every((c) => c === 'ok');
       const body: ReadyResponse = {
         status: ready ? 'ready' : 'not_ready',
@@ -284,6 +290,7 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
           userId: packet.userId,
           goalId: packet.goalId,
           stepId: packet.stepId,
+          stepType: parsed.data.stepType,
           configVersion: packet.configVersion,
           templateVersion: packet.templateVersion,
           manifest: packet.manifest,
@@ -422,6 +429,7 @@ function manifestOnly(record: {
   userId: string;
   goalId: string;
   stepId: string;
+  stepType?: string;
   configVersion: string;
   templateVersion: string;
   manifest: unknown;
@@ -434,6 +442,7 @@ function manifestOnly(record: {
     userId: record.userId,
     goalId: record.goalId,
     stepId: record.stepId,
+    ...(record.stepType ? { stepType: record.stepType } : {}),
     configVersion: record.configVersion,
     templateVersion: record.templateVersion,
     manifest: record.manifest,

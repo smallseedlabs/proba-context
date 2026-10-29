@@ -214,19 +214,45 @@ describe('production refuses local identity', () => {
   });
 
   it('createRuntime refuses to start in production without assertion keys', () => {
-    expect(() => createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://redis:6379' }, configPath)).toThrow(
-      /HUB_ASSERTION_PUBLIC_KEY_FILE/
-    );
+    expect(() =>
+      createRuntime(
+        {
+          NODE_ENV: 'production',
+          REDIS_URL: 'redis://:pw@redis:6379',
+          DATABASE_URL: 'postgresql://proba:pw@postgres:5432/proba_context',
+        },
+        configPath
+      )
+    ).toThrow(/HUB_ASSERTION_PUBLIC_KEY_FILE/);
   });
 
   it('createRuntime refuses to start in production without a Redis audit stream', () => {
     expect(() => createRuntime({ NODE_ENV: 'production' }, configPath)).toThrow(/REDIS_URL is required/);
   });
 
+  it('createRuntime refuses to start in production without DATABASE_URL for packet manifests', () => {
+    expect(() =>
+      createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://:pw@redis:6379' }, configPath)
+    ).toThrow(/DATABASE_URL is required/);
+  });
+
   it('createRuntime refuses a Redis host that is not in allowedDownstreamHosts', () => {
     expect(() => createRuntime({ NODE_ENV: 'production', REDIS_URL: 'redis://elsewhere:6379' }, configPath)).toThrow(
       /allowedDownstreamHosts/
     );
+  });
+
+  it('createRuntime refuses a DATABASE_URL host that is not in allowedDownstreamHosts', () => {
+    expect(() =>
+      createRuntime(
+        {
+          NODE_ENV: 'production',
+          REDIS_URL: 'redis://:pw@redis:6379',
+          DATABASE_URL: 'postgresql://proba:pw@elsewhere:5432/proba_context',
+        },
+        configPath
+      )
+    ).toThrow(/allowedDownstreamHosts/);
   });
 
   it('outside production createRuntime uses local identity only when the flag is set', () => {
@@ -264,7 +290,7 @@ describe('ready, metrics and cache off by default', () => {
       status: 'ready',
       service: 'context-api',
       configVersion: '1',
-      checks: { config: 'ok', cache: 'ok' },
+      checks: { config: 'ok', cache: 'ok', packetStore: 'ok' },
     });
     await app.close();
   });

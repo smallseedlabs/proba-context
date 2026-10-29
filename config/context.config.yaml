@@ -20,6 +20,12 @@ cacheStore:
   # Set true only when every replica may keep its own copy; documented in CONFIG.md / RUNBOOK.md.
   allowMemoryInProduction: false
 
+# Postgres packet manifests (context_packets). Never stores item text. Production requires DATABASE_URL.
+packetStore:
+  retentionDays: 7
+  # 0 disables the in-process purge timer; migrations/CLI can still purge.
+  purgeIntervalMinutes: 60
+
 # One entry per section kind. tokenShare of the enabled sources must add up to at most 1.
 sources:
   policy:
@@ -101,8 +107,18 @@ allowedDownstreamHosts:
   - 127.0.0.1:3400
   - 127.0.0.1:3420
   - 127.0.0.1:3300
+  - 127.0.0.1:3500
+  # Umbrella local compose service names (proba/local/docker-compose.yml).
+  - hub:3000
+  - audit-api:3100
+  - memory-api:3200
   # Redis, where the audit stream and optional source cache live (REDIS_URL must point here).
   - redis:6379
+  # Postgres packet store (DATABASE_URL). Host:port must match the URL.
+  - postgres:5432
+  - context-postgres:5432
+  - 127.0.0.1:5432
+  - 127.0.0.1:55435
 
 limits:
   maxNeedsPerRequest: 20
