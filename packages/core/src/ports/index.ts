@@ -26,4 +26,13 @@ export type {
   Tokenizer,
 } from './infrastructure.js';
 export type { NeedDecision, PolicyGuard } from './policyGuard.js';
+export type {
+  NeedCheckResult,
+  NeedFetchSources,
+  NeedHandler,
+  NeedHandlerContext,
+  StepRoundRecord,
+  StepRoundStore,
+} from './needs.js';
+export { stepRoundKey } from './needs.js';
 export { IdentityRejectedError } from './errors.js';

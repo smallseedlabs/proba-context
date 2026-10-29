@@ -247,18 +247,31 @@ describe('GET /v1/context/needs', () => {
     const app = await buildApp({}, servicesWithRecorder().services);
     const get = (stepType: string) =>
       app.inject({ method: 'GET', url: `/v1/context/needs?stepType=${stepType}`, headers: { authorization: bearer } });
-    expect((await get('propose_budget')).json()).toEqual({
-      stepType: 'propose_budget',
-      allowedNeeds: ['memory_search', 'analytics_compare', 'conversation_before'],
-      maxNeedsPerRequest: 20,
+    const propose = (await get('propose_budget')).json();
+    expect(propose.stepType).toBe('propose_budget');
+    expect(propose.maxNeedsPerRequest).toBe(20);
+    expect(propose.maxRoundsPerStep).toBe(2);
+    expect(propose.extraTokenShare).toBe(0.3);
+    expect(propose.allowedNeeds.map((n: { kind: string }) => n.kind)).toEqual([
+      'memory_search',
+      'analytics_compare',
+      'conversation_before',
+    ]);
+    expect(propose.allowedNeeds.find((n: { kind: string }) => n.kind === 'analytics_compare')).toMatchObject({
+      source: 'analytics',
+      maxItems: 10,
+      allowedWindows: ['1d', '7d', '14d', '30d'],
     });
-    expect((await get('explain_decision')).json().allowedNeeds).toEqual([
+    expect((await get('explain_decision')).json().allowedNeeds.map((n: { kind: string }) => n.kind)).toEqual([
       'memory_search',
       'analytics_compare',
       'audit_trace',
       'conversation_before',
     ]);
-    expect((await get('launch_campaign')).json().allowedNeeds).toEqual(['memory_search', 'conversation_before']);
+    expect((await get('launch_campaign')).json().allowedNeeds.map((n: { kind: string }) => n.kind)).toEqual([
+      'memory_search',
+      'conversation_before',
+    ]);
     await app.close();
   });
 

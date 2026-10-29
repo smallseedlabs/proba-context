@@ -12,6 +12,7 @@ import {
   type JtiStore,
   type PacketStore,
   type RateLimiter,
+  type StepRoundStore,
 } from '@smallseedlabs/proba-context-core';
 import {
   ActAsAssertionVerifier,
@@ -27,9 +28,11 @@ import {
   MemoryJtiStore,
   MemoryPacketStore,
   MemoryRateLimiter,
+  MemoryStepRoundStore,
   RedisJtiStore,
   RedisPacketStore,
   RedisRateLimiter,
+  RedisStepRoundStore,
   SystemClock,
   UnconfiguredIdentityResolver,
   createHttpSources,
@@ -127,14 +130,17 @@ export function createRuntime(env: Env, configPath: string): Runtime {
   let rateLimiter: RateLimiter;
   let jtiStore: JtiStore;
   let packetStore: PacketStore;
+  let stepRoundStore: StepRoundStore;
   if (env.REDIS_URL) {
     rateLimiter = new RedisRateLimiter({ url: env.REDIS_URL, keyPrefix: 'proba:context:rl:' });
     jtiStore = new RedisJtiStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:jti:' });
     packetStore = new RedisPacketStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:packet:' });
+    stepRoundStore = new RedisStepRoundStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:step-round:' });
     closers.push(async () => {
       await rateLimiter.close?.();
       await jtiStore.close?.();
       await packetStore.close?.();
+      await stepRoundStore.close?.();
     });
   } else if (production) {
     throw new Error('REDIS_URL is required when NODE_ENV=production for rate limits, jti store and packet manifests.');
@@ -142,6 +148,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     rateLimiter = new MemoryRateLimiter(clock, env.NODE_ENV);
     jtiStore = new MemoryJtiStore(clock, env.NODE_ENV);
     packetStore = new MemoryPacketStore(env.NODE_ENV);
+    stepRoundStore = new MemoryStepRoundStore(env.NODE_ENV);
   }
 
   const memoryBaseUrl = env.MEMORY_API_BASE_URL?.trim();
@@ -286,6 +293,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
         tokenizer: new ApproximateTokenizer(),
         clock,
         audit,
+        stepRoundStore,
       },
       rateLimiter,
       rateLimit: { max: rateLimitMax, windowMs: rateLimitWindowMs },

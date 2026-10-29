@@ -10,13 +10,12 @@ import Fastify, {
 import {
   ContextBuildError,
   IdentityRejectedError,
-  NEED_KINDS,
-  NEED_SECTION,
   buildAuditEvent,
   buildContext,
   contextRequestSchema,
   generateSpanId,
   getAuditActionInfo,
+  listAllowedNeeds,
   stepTypeSchema,
   type AdminAuthorizer,
   type AdminSession,
@@ -282,13 +281,13 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
           },
         });
       }
-      const allowedNeeds = NEED_KINDS.filter(
-        (kind) => deps.policyGuard.checkNeed(step.data, kind).allowed && deps.config.sources[NEED_SECTION[kind]].enabled
-      );
+      const allowedNeeds = listAllowedNeeds(deps.config, deps.policyGuard, step.data);
       return reply.status(200).send({
         stepType: step.data,
         allowedNeeds,
         maxNeedsPerRequest: deps.config.limits.maxNeedsPerRequest,
+        maxRoundsPerStep: deps.config.needs.maxRoundsPerStep,
+        extraTokenShare: deps.config.needs.extraTokenShare,
       });
     }
   );

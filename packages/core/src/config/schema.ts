@@ -70,6 +70,100 @@ export const limitsConfigSchema = z
 
 export type LimitsConfig = z.infer<typeof limitsConfigSchema>;
 
+/** Hard limits and source mapping for one registered need kind. */
+export const needKindConfigSchema = z
+  .object({
+    /** Section/source this need reads. */
+    source: sectionKindSchema,
+    /** Most items a single need of this kind may ask for (also capped by the protocol schema). */
+    maxItems: z.number().int().positive().max(500),
+    /** Soft token ceiling for items returned by one need of this kind. */
+    maxTokens: z.number().int().positive(),
+    /**
+     * Windows an `analytics_compare` need may ask for. Omitted for other kinds.
+     * A window outside this list is refused with `need_out_of_limits`.
+     */
+    allowedWindows: z.array(z.enum(['1d', '7d', '14d', '30d', '90d'])).min(1).optional(),
+  })
+  .strict();
+
+export type NeedKindConfig = z.infer<typeof needKindConfigSchema>;
+
+/** Shipped defaults for the hybrid needs loop (2 rounds, 30% extra budget). */
+const DEFAULT_NEEDS_CONFIG_INPUT = {
+  maxRoundsPerStep: 2,
+  extraTokenShare: 0.3,
+  kinds: {
+    memory_search: { source: 'memory' as const, maxItems: 20, maxTokens: 1500 },
+    analytics_compare: {
+      source: 'analytics' as const,
+      maxItems: 10,
+      maxTokens: 1000,
+      allowedWindows: ['1d', '7d', '14d', '30d'] as Array<'1d' | '7d' | '14d' | '30d' | '90d'>,
+    },
+    audit_trace: { source: 'audit_history' as const, maxItems: 100, maxTokens: 2000 },
+    conversation_before: { source: 'conversation' as const, maxItems: 50, maxTokens: 2000 },
+  },
+};
+
+/**
+ * Hybrid needs loop (Phase 4). Defaults: two extra rounds per step and 30% extra token budget.
+ * Each kind maps to a source port through a registered `NeedHandler`.
+ */
+export const needsConfigSchema = z
+  .object({
+    /** Extra needs rounds the brain may run after the first (template-only) packet for a step. */
+    maxRoundsPerStep: z.number().int().positive().max(10).default(2),
+    /** Extra share of the base budget granted on a needs round (0.3 = 30 percent). */
+    extraTokenShare: z.number().min(0).max(1).default(0.3),
+    kinds: z
+      .object({
+        memory_search: needKindConfigSchema,
+        analytics_compare: needKindConfigSchema,
+        audit_trace: needKindConfigSchema,
+        conversation_before: needKindConfigSchema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((needs, ctx) => {
+    const expected: Record<NeedKind, (typeof SOURCE_NAMES)[number]> = {
+      memory_search: 'memory',
+      analytics_compare: 'analytics',
+      audit_trace: 'audit_history',
+      conversation_before: 'conversation',
+    };
+    for (const kind of NEED_KINDS) {
+      const cfg = needs.kinds[kind];
+      if (cfg.source !== expected[kind]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${kind}.source must be "${expected[kind]}"`,
+          path: ['kinds', kind, 'source'],
+        });
+      }
+      if (kind === 'analytics_compare' && (!cfg.allowedWindows || cfg.allowedWindows.length === 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'analytics_compare.allowedWindows is required',
+          path: ['kinds', kind, 'allowedWindows'],
+        });
+      }
+      if (kind !== 'analytics_compare' && cfg.allowedWindows !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${kind} must not set allowedWindows`,
+          path: ['kinds', kind, 'allowedWindows'],
+        });
+      }
+    }
+  });
+
+export type NeedsConfig = z.infer<typeof needsConfigSchema>;
+
+/** Parsed shipped defaults (same object used when `needs` is omitted from the config file). */
+export const DEFAULT_NEEDS_CONFIG: NeedsConfig = needsConfigSchema.parse(DEFAULT_NEEDS_CONFIG_INPUT);
+
 const sourcesShape = Object.fromEntries(SOURCE_NAMES.map((name) => [name, sourceConfigSchema])) as Record<
   (typeof SOURCE_NAMES)[number],
   typeof sourceConfigSchema
@@ -118,6 +212,8 @@ export const contextConfigSchema = z
     /** Hosts the service may call (proba-audit, proba-memory, ...). Everything else is refused. */
     allowedDownstreamHosts: z.array(hostSchema).max(32),
     limits: limitsConfigSchema.default({}),
+    /** Hybrid needs loop. Defaults: 2 rounds, 30% extra budget, four registered kinds. */
+    needs: needsConfigSchema.default(DEFAULT_NEEDS_CONFIG),
     redaction: redactionConfigSchema.default({}),
   })
   .strict()

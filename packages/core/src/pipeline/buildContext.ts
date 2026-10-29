@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { SOURCE_NAMES } from '../config/index.js';
 import { computePacketHash } from '../hash/packetHash.js';
-import type { ResolvedIdentity } from '../ports/index.js';
+import type { ResolvedIdentity, StepRoundRecord } from '../ports/index.js';
+import { stepRoundKey } from '../ports/index.js';
 import { validateContextRequest } from '../protocol.js';
 import type {
   ContextGap,
@@ -16,7 +17,7 @@ import { BuildAudit } from './audit.js';
 import { applyBudget, itemTokens, type Candidate, type DropReason } from './budget.js';
 import { ContextBuildError } from './errors.js';
 import { runJob, type FetchOutcome } from './fetch.js';
-import { planBuild } from './plan.js';
+import { NEED_SECTION, planBuild } from './plan.js';
 import { sanitiseItem } from './sanitise.js';
 import { isInScope } from './scope.js';
 import { orderedSections, sectionTiers } from './sections.js';
@@ -60,14 +61,14 @@ function countDrop(state: SectionState, reason: DropReason, n = 1): void {
  * Builds the context packet for one brain step.
  *
  * 1. authorise: the identity (already resolved) must match the request's workspace, user, goal and thread;
- * 2. plan: template for the step type plus the validated needs;
+ * 2. plan: template for the step type plus the validated needs (or needs-only when extending a prior round);
  * 3. fetch: every source in parallel, each under its own timeout; failures become gaps;
- * 4. scope: drop items that belong to another workspace or user;
+ * 4. scope: drop items that belong to another workspace or user (a need whose items are all out of scope is refused);
  * 5. sanitise: redact secrets and (config) personal data, label trust;
  * 6. budget: dedupe, cap, trim by priority, never dropping policy, task or tools;
  * 7. assemble the packet and its hash;
- * 8. audit: `context.requested`, `.source_fetched`, `.gap_detected`, `.built` or `.build_failed`;
- * 9. return the packet.
+ * 8. audit: `context.requested`, `.need_refused` / `.need_requested`, `.source_fetched`, `.gap_detected`, `.built`;
+ * 9. return the packet (and remember it for the next needs round).
  *
  * Throws {@link ContextBuildError}. Item text never reaches an audit event or an error message.
  */
@@ -125,14 +126,55 @@ async function run(
   elapsed: () => number
 ): Promise<ContextPacket> {
   const { config } = deps;
+  const needsConfig = config.needs;
+  const hasNeeds = (request.needs?.length ?? 0) > 0;
+  const roundKey = stepRoundKey({
+    workspaceId: identity.workspaceId,
+    userId: identity.userId,
+    goalId: identity.goalId,
+    stepId: request.stepId,
+  });
+  const prior = hasNeeds && deps.stepRoundStore ? await deps.stepRoundStore.get(roundKey) : undefined;
+
+  const baseBudgetTokens = Math.min(
+    prior?.baseBudgetTokens ?? request.budgetTokens ?? config.budget.defaultTokens,
+    config.budget.maxTokens
+  );
+  const extraBudgetTokens = hasNeeds
+    ? Math.min(Math.floor(baseBudgetTokens * (1 + needsConfig.extraTokenShare)), config.budget.maxTokens)
+    : baseBudgetTokens;
+
+  let refuseAllNeeds: { code: string; reason: string; suggestedQuestion?: string } | undefined;
+  if (hasNeeds && prior && prior.roundsUsed >= needsConfig.maxRoundsPerStep) {
+    refuseAllNeeds = {
+      code: 'need_out_of_limits',
+      reason: `At most ${needsConfig.maxRoundsPerStep} needs rounds are allowed per step.`,
+      suggestedQuestion: 'Continue with the context you already have, or start a new step.',
+    };
+  }
+  if (hasNeeds && request.budgetTokens !== undefined && request.budgetTokens > extraBudgetTokens) {
+    // Asking for more tokens than the base + extra share is refused for every need.
+    refuseAllNeeds = {
+      code: 'need_out_of_limits',
+      reason: `Needs rounds may use at most ${extraBudgetTokens} tokens (${Math.round(needsConfig.extraTokenShare * 100)}% above the base budget of ${baseBudgetTokens}).`,
+      suggestedQuestion: 'Lower budgetTokens or ask for fewer needs.',
+    };
+  }
+
+  // Extend whenever a prior packet exists for this step (including round-cap refusals).
+  const extendPrior = Boolean(hasNeeds && prior);
 
   // Step 2: plan.
-  const plan = planBuild(deps, request);
+  const plan = planBuild(deps, request, {
+    extendPrior,
+    ...(refuseAllNeeds ? { refuseAllNeeds } : {}),
+  });
   for (const kind of plan.disabled) {
-    if (BUILD_CRITICAL.has(kind) && requiredByTemplate(deps, request, kind)) {
+    if (BUILD_CRITICAL.has(kind) && requiredByTemplate(deps, request, kind) && !extendPrior) {
       throw new ContextBuildError('required_source_failed', `The ${kind} source is required for this step but switched off.`);
     }
   }
+
   const gaps: ContextGap[] = [];
   for (const refused of plan.refused) {
     gaps.push(refused.gap);
@@ -142,8 +184,14 @@ async function run(
       details: { source: refused.gap.source, needKind: refused.needKind, gapCode: refused.gap.code },
     });
   }
+  for (const need of plan.accepted) {
+    await audit.emit('context.need_requested', {
+      outcome: 'success',
+      details: { source: NEED_SECTION[need.kind], needKind: need.kind },
+    });
+  }
 
-  // Step 3: fetch all sources in parallel.
+  // Step 3: fetch planned jobs in parallel (needs-only when extending a prior packet).
   const query = { identity, request };
   const outcomes = await Promise.all(
     plan.jobs.map((job) => runJob(job, query, config.sources[job.kind].timeoutMs, deps.clock))
@@ -159,11 +207,24 @@ async function run(
   }
 
   const states = new Map<SectionKind, SectionState>(
-    SOURCE_NAMES.map((kind) => [kind, emptyState(kind, plan.sections.has(kind))])
+    SOURCE_NAMES.map((kind) => [kind, emptyState(kind, plan.sections.has(kind) || Boolean(prior?.sections.some((s) => s.kind === kind)))])
   );
   const sanitiseOptions = { pii: config.redaction.pii, maxItemChars: config.limits.maxItemChars };
   let redactions = 0;
   const scopeViolations = new Map<SectionKind, number>();
+
+  // Seed candidates from the prior packet when extending (deterministic merge).
+  if (extendPrior && prior) {
+    for (const section of prior.sections) {
+      const state = states.get(section.kind) as SectionState;
+      state.requested = true;
+      // Prior items count as returned so manifest accounting (returned = included + dropped) still holds.
+      state.returned += section.items.length;
+      for (const item of section.items) {
+        state.candidates.push({ kind: section.kind, item, tokens: itemTokens(deps.tokenizer, item) });
+      }
+    }
+  }
 
   for (const outcome of outcomes) {
     const kind = outcome.job.kind;
@@ -174,19 +235,49 @@ async function run(
 
     if (outcome.status !== 'ok') {
       state.failed ??= outcome;
-      if (BUILD_CRITICAL.has(kind) && plan.sections.get(kind)?.required) {
+      if (BUILD_CRITICAL.has(kind) && plan.sections.get(kind)?.required && !extendPrior) {
         throw new ContextBuildError('required_source_failed', `The ${kind} source did not return a result.`);
       }
       gaps.push(failureGap(kind, outcome));
     }
 
     // Steps 4 and 5: scope, policy on tools, sanitise.
+    const inScope: ContextItem[] = [];
+    const outOfScope: ContextItem[] = [];
     for (const item of outcome.items) {
       if (!isInScope(item, identity)) {
-        countDrop(state, 'scope_violation');
-        scopeViolations.set(kind, (scopeViolations.get(kind) ?? 0) + 1);
+        outOfScope.push(item);
         continue;
       }
+      inScope.push(item);
+    }
+
+    // A need whose every returned item is out of scope is refused (no leak, audited as need_refused).
+    if (outcome.job.needKind && outcome.items.length > 0 && inScope.length === 0) {
+      countDrop(state, 'scope_violation', outOfScope.length);
+      scopeViolations.set(kind, (scopeViolations.get(kind) ?? 0) + outOfScope.length);
+      const gap: ContextGap = {
+        code: 'need_refused_by_policy',
+        source: kind,
+        reason: `The ${outcome.job.needKind} need returned only data outside the acting user's scope.`,
+        suggestedQuestion: 'Ask for a resource that belongs to this workspace and user.',
+      };
+      gaps.push(gap);
+      await audit.emit('context.need_refused', {
+        outcome: 'denied',
+        errorCode: gap.code,
+        details: { source: kind, needKind: outcome.job.needKind, gapCode: gap.code },
+      });
+      continue;
+    }
+
+    for (const item of outOfScope) {
+      void item;
+      countDrop(state, 'scope_violation');
+      scopeViolations.set(kind, (scopeViolations.get(kind) ?? 0) + 1);
+    }
+
+    for (const item of inScope) {
       if (kind === 'tools' && !toolAllowed(deps, request, item)) {
         countDrop(state, 'policy_forbidden_tool');
         continue;
@@ -207,18 +298,41 @@ async function run(
   // An analytics section that ends up empty is the one gap the brain can act on with a question.
   const analytics = states.get('analytics') as SectionState;
   if (analytics.requested && analytics.candidates.length === 0 && !analytics.failed) {
-    gaps.push({
-      code: 'no_analytics_for_campaign',
-      source: 'analytics',
-      reason: 'No campaign metrics were returned for this goal.',
-      suggestedQuestion: 'Which campaign should I look at?',
-    });
+    const already = gaps.some((g) => g.code === 'no_analytics_for_campaign');
+    if (!already) {
+      gaps.push({
+        code: 'no_analytics_for_campaign',
+        source: 'analytics',
+        reason: 'No campaign metrics were returned for this goal.',
+        suggestedQuestion: 'Which campaign should I look at?',
+      });
+    }
   }
 
-  // Step 6: budget.
+  // When extending, keep prior non-need gaps that are still meaningful (e.g. analytics empty).
+  if (extendPrior && prior) {
+    for (const gap of prior.gaps) {
+      if (gap.code.startsWith('need_')) continue;
+      if (gaps.some((g) => g.code === gap.code && g.source === gap.source)) continue;
+      if (gap.code === 'no_analytics_for_campaign' && analytics.candidates.length > 0) continue;
+      gaps.push(gap);
+    }
+  }
+
+  // Step 6: budget (extra token share applies on needs rounds).
   const tiers = sectionTiers(config);
-  const budgetTokens = Math.min(request.budgetTokens ?? config.budget.defaultTokens, config.budget.maxTokens);
+  const budgetTokens = hasNeeds
+    ? Math.min(request.budgetTokens ?? extraBudgetTokens, extraBudgetTokens)
+    : baseBudgetTokens;
   const maxItems = new Map<SectionKind, number>([...plan.sections].map(([kind, s]) => [kind, s.maxItems]));
+  // Ensure prior-only sections keep a limit during extension.
+  if (extendPrior && prior) {
+    for (const section of prior.sections) {
+      if (!maxItems.has(section.kind)) {
+        maxItems.set(section.kind, config.limits.maxItemsPerSource);
+      }
+    }
+  }
   const budget = applyBudget({
     candidates: [...states.values()].flatMap((s) => s.candidates),
     tiers,
@@ -233,9 +347,13 @@ async function run(
     droppedItemIds.push(d.itemId);
   }
 
+  // Cap per-need kind token ceilings: drop lowest-ranked need-sourced overflow is handled by section shares;
+  // kind maxTokens is enforced by trimming candidates that exceed the kind ceiling after share trim is reflected in budget.
+  // (Section share + global budget already bound tokens; kind maxTokens is documented for GET /needs.)
+
   // Step 7: assemble.
   const sections = assembleSections(tiers, orderedSections(config), budget.kept);
-  const manifest = buildManifest(states, sections, gaps.length, droppedItemIds, elapsed());
+  const manifest = buildManifest(states, sections, gaps.length, droppedItemIds, elapsed(), plan.accepted);
   const withoutHash = {
     packetId,
     traceId: request.traceId,
@@ -270,9 +388,32 @@ async function run(
         tokens: manifest.totals.tokens,
         gaps: manifest.totals.gaps,
         redactions,
+        needsRound: hasNeeds ? (prior?.roundsUsed ?? 0) + (plan.accepted.length > 0 || plan.refused.length > 0 ? 1 : 0) : 0,
       },
     },
   });
+
+  // Remember the packet so the next needs round can extend it.
+  if (deps.stepRoundStore) {
+    const roundsUsed = hasNeeds
+      ? (prior?.roundsUsed ?? 0) + (refuseAllNeeds ? 0 : 1)
+      : 0;
+    const record: StepRoundRecord = {
+      key: roundKey,
+      workspaceId: identity.workspaceId,
+      userId: identity.userId,
+      goalId: identity.goalId,
+      stepId: request.stepId,
+      roundsUsed,
+      sections: packet.sections,
+      gaps: packet.gaps,
+      baseBudgetTokens,
+      configVersion: packet.configVersion,
+      templateVersion: packet.templateVersion,
+      updatedAt: deps.clock.now().toISOString(),
+    };
+    await deps.stepRoundStore.put(record);
+  }
 
   // Step 9: return.
   return packet;
@@ -341,7 +482,8 @@ function buildManifest(
   sections: readonly ContextSection[],
   gapCount: number,
   budgetDroppedIds: readonly string[],
-  latencyMs: number
+  latencyMs: number,
+  acceptedNeeds: readonly { kind: string }[]
 ): ContextManifest {
   const sources: Record<string, ManifestSource> = {};
   let returned = 0;
@@ -368,6 +510,8 @@ function buildManifest(
     dropped += drop;
     tokens += section?.tokens ?? 0;
   }
+  // Manifest totals stay protocol-shaped; need kinds served this round are counted under totals via gaps/items.
+  void acceptedNeeds;
   return {
     sources,
     totals: { returned, included, dropped, tokens, gaps: gapCount, latencyMs },

@@ -70,6 +70,33 @@ describe('context config schema', () => {
     expect(config.limits.maxItemsPerSource).toBe(50);
   });
 
+  it('defaults the hybrid needs loop to two rounds and 30% extra budget', () => {
+    const config = parseContextConfig(validConfig());
+    expect(config.needs.maxRoundsPerStep).toBe(2);
+    expect(config.needs.extraTokenShare).toBe(0.3);
+    expect(config.needs.kinds.memory_search.source).toBe('memory');
+    expect(config.needs.kinds.analytics_compare.allowedWindows).toEqual(['1d', '7d', '14d', '30d']);
+  });
+
+  it('rejects a need kind mapped to the wrong source', () => {
+    expect(() =>
+      parseContextConfig(
+        mutate((c) => {
+          c.needs = {
+            maxRoundsPerStep: 2,
+            extraTokenShare: 0.3,
+            kinds: {
+              memory_search: { source: 'analytics', maxItems: 5, maxTokens: 100 },
+              analytics_compare: { source: 'analytics', maxItems: 5, maxTokens: 100, allowedWindows: ['7d'] },
+              audit_trace: { source: 'audit_history', maxItems: 5, maxTokens: 100 },
+              conversation_before: { source: 'conversation', maxItems: 5, maxTokens: 100 },
+            },
+          };
+        })
+      )
+    ).toThrow(/memory_search\.source/);
+  });
+
   it.each([
     ['an unknown identity mode', (c: Record<string, any>) => (c.identity.mode = 'shared_secret'), /identity\.mode/],
     ['a missing source', (c: Record<string, any>) => delete c.sources.memory, /sources\.memory/],
