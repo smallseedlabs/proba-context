@@ -251,6 +251,25 @@ describe('Phase 3 identity HTTP', () => {
       headers: { authorization: `Bearer ${viewerToken}` },
     });
     expect(viewerList.statusCode).toBe(403);
+
+    const invalidateViewer = await app.inject({
+      method: 'POST',
+      url: '/v1/cache/invalidate',
+      headers: { authorization: `Bearer ${viewerToken}` },
+      payload: { goalId: IDS.goal, workspaceId: 'seedbed' },
+    });
+    expect(invalidateViewer.statusCode).toBe(403);
+
+    const invalidateAdmin = await app.inject({
+      method: 'POST',
+      url: '/v1/cache/invalidate',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { goalId: IDS.goal, workspaceId: 'seedbed' },
+    });
+    expect(invalidateAdmin.statusCode).toBe(200);
+    expect(invalidateAdmin.json()).toEqual({ removed: expect.any(Number) });
+    expect(audit.events.some((e) => e.action === 'context.cache_invalidated')).toBe(true);
+
     await app.close();
   });
 });

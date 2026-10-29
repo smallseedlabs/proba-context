@@ -9,13 +9,17 @@ import {
   type ContextPacket,
 } from '@smallseedlabs/proba-context-core';
 import {
+  MemoryContextCache,
+  MemoryContextCacheRefusedError,
   MemoryJtiStore,
   MemoryPacketStore,
   MemoryRateLimiter,
   MemoryRateLimiterRefusedError,
   MemoryJtiStoreRefusedError,
   MemoryPacketStoreRefusedError,
+  RedisCachePasswordRequiredError,
   UnconfiguredIdentityResolver,
+  assertRedisPassword,
 } from '@smallseedlabs/proba-context-adapters';
 import { buildApp, type ContextServices } from './app.js';
 import { createRuntime } from './runtime.js';
@@ -239,6 +243,56 @@ describe('production refuses local identity', () => {
     expect(() => new MemoryRateLimiter(undefined, 'production')).toThrow(MemoryRateLimiterRefusedError);
     expect(() => new MemoryJtiStore(undefined, 'production')).toThrow(MemoryJtiStoreRefusedError);
     expect(() => new MemoryPacketStore('production')).toThrow(MemoryPacketStoreRefusedError);
+  });
+
+  it('refuses in-process context cache in production unless explicitly allowed', () => {
+    expect(() => new MemoryContextCache({ nodeEnv: 'production' })).toThrow(MemoryContextCacheRefusedError);
+    expect(() => new MemoryContextCache({ nodeEnv: 'production', allowInProduction: true })).not.toThrow();
+  });
+
+  it('refuses passwordless Redis for the context cache in production', () => {
+    expect(() => assertRedisPassword('redis://redis:6379', 'production')).toThrow(RedisCachePasswordRequiredError);
+  });
+});
+
+describe('ready, metrics and cache off by default', () => {
+  it('serves /ready with the active config version', async () => {
+    const app = await buildApp({}, servicesWithRecorder().services);
+    const res = await app.inject({ method: 'GET', url: '/ready' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      status: 'ready',
+      service: 'context-api',
+      configVersion: '1',
+      checks: { config: 'ok', cache: 'ok' },
+    });
+    await app.close();
+  });
+
+  it('exposes Prometheus /metrics without user ids', async () => {
+    const { services } = servicesWithRecorder();
+    const app = await buildApp({}, services);
+    await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: bearer }, payload: body() });
+    const res = await app.inject({ method: 'GET', url: '/metrics' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/plain/);
+    expect(res.body).toContain('context_builds_total');
+    expect(res.body).toContain('context_config_version_info');
+    expect(res.body).not.toMatch(IDS.user);
+    await app.close();
+  });
+
+  it('leaves every source cache off in the shipped config so builds miss', async () => {
+    const { services } = servicesWithRecorder();
+    expect(Object.values(services.deps.config.sources).every((s) => !s.cache.enabled)).toBe(true);
+    const app = await buildApp({}, services);
+    const res = await app.inject({ method: 'POST', url: '/v1/context/build', headers: { authorization: bearer }, payload: body() });
+    expect(res.statusCode).toBe(200);
+    const packet = res.json<ContextPacket>();
+    for (const source of Object.values(packet.manifest.sources)) {
+      expect(source.cacheHit).toBe(false);
+    }
+    await app.close();
   });
 });
 

@@ -83,7 +83,7 @@ Empty sources other than analytics are not gaps: no memory is a normal state. Ga
 
 ### Manifest
 
-`manifest.sources` has an entry for each of the seven section kinds: `requested` (planned and enabled), `returned` (raw count), `included`, `dropped` (`returned - included`), `droppedReasons`, `cacheHit` (always `false`, the cache is off), `latencyMs` (slowest call of that source), `tokens`. `totals` sums them, plus `gaps` and the build's `latencyMs`. Latencies come from the injected `Clock`, so they are zero with a fixed clock.
+`manifest.sources` has an entry for each of the seven section kinds: `requested` (planned and enabled), `returned` (raw count), `included`, `dropped` (`returned - included`), `droppedReasons`, `cacheHit` (true when every fetch for that source in this build was served from `ContextCache`), `latencyMs` (slowest call of that source), `tokens`. `totals` sums them, plus `gaps` and the build's `latencyMs`. Latencies come from the injected `Clock`, so they are zero with a fixed clock. Per-source caching is off by default (`sources.<kind>.cache`); see [CONFIG.md](CONFIG.md).
 
 ## Redaction
 
@@ -120,10 +120,13 @@ Audit sink selection (`runtime.ts`): with `REDIS_URL` set (host must be in `allo
 | Method and path | Purpose |
 |-----------------|---------|
 | `GET /health` | Liveness. |
+| `GET /ready` | Readiness: config loaded and cache adapter reachable; includes `configVersion`. |
+| `GET /metrics` | Prometheus text (admin when Firebase is configured; otherwise internal/loopback). |
 | `POST /v1/context/build` | Body: `ContextRequest` (validated with the protocol's zod schema). 200 with a `ContextPacket`. |
 | `GET /v1/context/needs?stepType=` | Allowed need kinds for that step (with `maxItems`, `maxTokens`, optional `allowedWindows`), plus `maxRoundsPerStep` and `extraTokenShare`. See [NEEDS](NEEDS.md). |
 | `GET /v1/context/packets?goalId=` | Admin (Firebase): paginated packet manifests for a goal. Viewers get 403. |
 | `GET /v1/context/packets/{packetId}` | Admin (Firebase): one packet's manifest only. Viewers get 403. |
+| `POST /v1/cache/invalidate` | Admin (Firebase): drop cache entries by `userId` and/or `goalId` (optional `workspaceId`); audited as `context.cache_invalidated`. |
 
 Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "code", "message" } }` (400 also carries `issues` with paths and messages, no values):
 
@@ -155,6 +158,7 @@ Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "
 | 2 | HTTP sources for memory, audit history and analytics; Hub conversation/task still empty until brief 05 merges |
 | 3 | Act-as assertion verification, Hub authorize, admin Firebase packet routes, rate limits, jti replay store |
 | 4 | Hybrid needs loop: registered `NeedHandler`s, round / extra-token caps, packet extension, `GET /v1/context/needs` with limits, [NEEDS](NEEDS.md) |
+| 5 | Per-source `ContextCache` (memory LRU + Redis), `POST /v1/cache/invalidate`, Prometheus `/metrics`, `/ready`, SIGHUP config reload, `scripts/bench-context.mjs` |
 
 ## Open questions
 

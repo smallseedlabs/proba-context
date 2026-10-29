@@ -19,6 +19,10 @@ export interface FetchOutcome {
    * (for example `source_error` after a schema validation failure).
    */
   gapCode?: string;
+  /** True when the payload came from `ContextCache` (already redacted). */
+  cacheHit?: boolean;
+  /** Cache key used for this job, when caching is enabled for the source. */
+  cacheKey?: string;
 }
 
 class SourceTimeout extends Error {}

@@ -3,10 +3,12 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   ConfigError,
+  ContextMetrics,
   loadContextConfig,
   loadTemplates,
   type AdminAuthorizer,
   type AuditEmitter,
+  type ContextCache,
   type IdentityResolver,
   type ContextConfig,
   type JtiStore,
@@ -25,10 +27,12 @@ import {
   HubAuthorizeClient,
   LocalIdentityResolver,
   LogAuditEmitter,
+  MemoryContextCache,
   MemoryJtiStore,
   MemoryPacketStore,
   MemoryRateLimiter,
   MemoryStepRoundStore,
+  RedisContextCache,
   RedisJtiStore,
   RedisPacketStore,
   RedisRateLimiter,
@@ -59,6 +63,10 @@ export interface Runtime {
   identityMode: IdentityModeName;
   auditSink: 'redis_stream' | 'log';
   httpSources: WiredHttpSource[];
+  /** Absolute path used to load (and SIGHUP-reload) the config. */
+  configPath: string;
+  /** Reload config + templates + policy after SIGHUP; keeps cache, metrics and stores. */
+  reloadConfig(): void;
   close(): Promise<void>;
 }
 
@@ -83,16 +91,19 @@ function truthy(value: string | undefined): boolean {
  *   verifies Firebase ID tokens when configured; local identity only when `NODE_ENV!=production` and
  *   `identity.allowLocal` / `CONTEXT_ALLOW_LOCAL_IDENTITY`.
  * - Rate limits / jti / packet manifests: Redis in production (memory refused); memory outside production.
+ * - Context cache: `cacheStore.backend` memory (LRU) or redis; per-source enable under `sources.*.cache`.
  */
 export function createRuntime(env: Env, configPath: string): Runtime {
-  const config = loadContextConfig(configPath);
+  let config = loadContextConfig(configPath);
   const configDir = dirname(configPath);
   const clock = new SystemClock();
   const production = env.NODE_ENV === 'production';
   const closers: Array<() => Promise<void>> = [];
+  const metrics = new ContextMetrics();
+  metrics.setConfigVersion(config.version);
 
-  const policy = loadConfigPolicy(configDir, clock);
-  const templates = loadTemplates(join(configDir, 'templates'));
+  let policy = loadConfigPolicy(configDir, clock);
+  let templates = loadTemplates(join(configDir, 'templates'));
 
   let audit: AuditEmitter;
   let auditSink: Runtime['auditSink'];
@@ -267,7 +278,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const sources = createInProcessSources({
+  let sources = createInProcessSources({
     policy: policy.policy,
     tools: policy.tools,
     clock,
@@ -278,29 +289,109 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     ...(http?.conversation ? { conversation: http.conversation } : {}),
   });
 
+  const anySourceCacheEnabled = () =>
+    Object.values(config.sources).some((s) => s.cache.enabled && s.cache.ttlSeconds > 0);
+
+  let cache: ContextCache;
+  if (config.cacheStore.backend === 'redis') {
+    if (!env.REDIS_URL) {
+      throw new ConfigError('REDIS_URL', ['required when cacheStore.backend is redis']);
+    }
+    const host = hostOf(env.REDIS_URL, '6379');
+    if (!config.allowedDownstreamHosts.includes(host)) {
+      throw new ConfigError('REDIS_URL', [`host "${host}" is not in allowedDownstreamHosts`]);
+    }
+    cache = new RedisContextCache({ url: env.REDIS_URL, nodeEnv: env.NODE_ENV });
+    closers.push(() => cache.close?.() ?? Promise.resolve());
+  } else {
+    const memoryAllowed =
+      config.cacheStore.allowMemoryInProduction || !anySourceCacheEnabled();
+    if (production && anySourceCacheEnabled() && !config.cacheStore.allowMemoryInProduction) {
+      throw new ConfigError('cacheStore.allowMemoryInProduction', [
+        'must be true to use the in-process context cache when NODE_ENV=production (each replica keeps its own copy); prefer cacheStore.backend: redis',
+      ]);
+    }
+    cache = new MemoryContextCache({
+      clock,
+      // Adapter may exist while every source cache is off; refuse only when production would actually use it.
+      allowInProduction: memoryAllowed,
+      nodeEnv: env.NODE_ENV,
+      maxEntries: Math.max(
+        1000,
+        ...Object.values(config.sources).map((s) => s.cache.maxEntries)
+      ),
+    });
+    closers.push(() => cache.close?.() ?? Promise.resolve());
+  }
+
+  const tokenizer = new ApproximateTokenizer();
+
+  const services: ContextServices = {
+    identity,
+    deps: {
+      config,
+      templates,
+      sources,
+      policyGuard: policy.guard,
+      tokenizer,
+      clock,
+      audit,
+      stepRoundStore,
+      cache,
+      metrics,
+    },
+    rateLimiter,
+    rateLimit: { max: rateLimitMax, windowMs: rateLimitWindowMs },
+    packetStore,
+    cache,
+    metrics,
+    ...(admin ? { admin } : {}),
+    corsOrigins,
+    scopeViolationCount: { value: 0 },
+  };
+
   return {
     config,
     identityMode,
     auditSink,
     httpSources,
-    services: {
-      identity,
-      deps: {
-        config,
-        templates,
-        sources,
-        policyGuard: policy.guard,
-        tokenizer: new ApproximateTokenizer(),
+    configPath,
+    services,
+    reloadConfig: () => {
+      const next = loadContextConfig(configPath);
+      if (next.cacheStore.backend !== config.cacheStore.backend) {
+        throw new ConfigError('cacheStore.backend', [
+          'cannot change cacheStore.backend on SIGHUP; restart the process',
+        ]);
+      }
+      if (
+        production &&
+        next.cacheStore.backend === 'memory' &&
+        Object.values(next.sources).some((s) => s.cache.enabled) &&
+        !next.cacheStore.allowMemoryInProduction
+      ) {
+        throw new ConfigError('cacheStore.allowMemoryInProduction', [
+          'must be true to enable the in-process context cache in production',
+        ]);
+      }
+      policy = loadConfigPolicy(configDir, clock);
+      templates = loadTemplates(join(configDir, 'templates'));
+      sources = createInProcessSources({
+        policy: policy.policy,
+        tools: policy.tools,
         clock,
-        audit,
-        stepRoundStore,
-      },
-      rateLimiter,
-      rateLimit: { max: rateLimitMax, windowMs: rateLimitWindowMs },
-      packetStore,
-      ...(admin ? { admin } : {}),
-      corsOrigins,
-      scopeViolationCount: { value: 0 },
+        ...(http?.memory ? { memory: http.memory } : {}),
+        ...(http?.auditHistory ? { auditHistory: http.auditHistory } : {}),
+        ...(http?.analytics ? { analytics: http.analytics } : {}),
+        ...(http?.task ? { task: http.task } : {}),
+        ...(http?.conversation ? { conversation: http.conversation } : {}),
+      });
+      config = next;
+      metrics.setConfigVersion(config.version);
+      services.deps.config = config;
+      services.deps.templates = templates;
+      services.deps.sources = sources;
+      services.deps.policyGuard = policy.guard;
     },
     close: async () => {
       for (const close of closers) await close();

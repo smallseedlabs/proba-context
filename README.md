@@ -6,7 +6,7 @@ The request and packet shapes (`ContextRequest`, `ContextPacket`) come from [`@s
 
 ## Status
 
-Context bridge through Phase 4. `POST /v1/context/build` verifies a Hub act-as assertion (or local identity on a workstation), authorises via Hub `POST /v1/internal/authorize`, and builds a packet from templates, typed needs (hybrid loop with round and extra-token caps), config-file policy/tools, and Phase-2 HTTP sources (memory, audit, analytics, Hub task/conversation) with redaction, scope filtering, budgeting, a deterministic `packetHash` and `context.*` audit events. `GET /v1/context/needs` lists allowed need kinds with limits. Admin `GET /v1/context/packets*` serve manifests only (Firebase allow-list). See [docs/DESIGN.md](docs/DESIGN.md), [docs/NEEDS.md](docs/NEEDS.md), [docs/SCOPING.md](docs/SCOPING.md) and [docs/CONFIG.md](docs/CONFIG.md).
+Context bridge through Phase 5. `POST /v1/context/build` verifies a Hub act-as assertion (or local identity on a workstation), authorises via Hub `POST /v1/internal/authorize`, and builds a packet from templates, typed needs (hybrid loop with round and extra-token caps), config-file policy/tools, and Phase-2 HTTP sources (memory, audit, analytics, Hub task/conversation) with redaction, scope filtering, budgeting, optional per-source caching (off by default), a deterministic `packetHash` and `context.*` audit events. `GET /v1/context/needs` lists allowed need kinds with limits. Admin packet and cache-invalidate routes use the Firebase allow-list. Prometheus `/metrics`, `/ready`, and SIGHUP config reload are available. See [docs/DESIGN.md](docs/DESIGN.md), [docs/NEEDS.md](docs/NEEDS.md), [docs/SCOPING.md](docs/SCOPING.md) and [docs/CONFIG.md](docs/CONFIG.md).
 
 ## Layout
 
@@ -17,7 +17,7 @@ Context bridge through Phase 4. `POST /v1/context/build` verifies a Hub act-as a
 | `apps/context-api` | Fastify service, port 3500 |
 | `config/` | `context.config.yaml`, `policy.yaml`, `tools.yaml`, and `templates/` (one versioned file per step type) |
 | `docs/` | [DESIGN](docs/DESIGN.md), [WALKTHROUGH_RAISE_BUDGET](docs/WALKTHROUGH_RAISE_BUDGET.md), [CONFIG](docs/CONFIG.md), [SCOPING](docs/SCOPING.md), [RUNBOOK](docs/RUNBOOK.md) |
-| `scripts/` | `check-compose-security.mjs` |
+| `scripts/` | `check-compose-security.mjs`, `bench-context.mjs` |
 
 ## Run
 
@@ -48,14 +48,17 @@ curl http://127.0.0.1:3500/health
 | Method | Path | Response |
 |--------|------|----------|
 | GET | `/health` | `{ "status": "ok", "service": "context-api" }` |
+| GET | `/ready` | Readiness + `configVersion` |
+| GET | `/metrics` | Prometheus text |
 | POST | `/v1/context/build` | `ContextRequest` in, `ContextPacket` out |
 | GET | `/v1/context/needs?stepType=` | Allowed need kinds with limits for that step |
 | GET | `/v1/context/packets?goalId=` | Admin: packet manifests for a goal |
 | GET | `/v1/context/packets/{id}` | Admin: one packet manifest |
+| POST | `/v1/cache/invalidate` | Admin: invalidate by user and/or goal |
 
 ## Configuration
 
-`CONTEXT_CONFIG_PATH` (default `config/context.config.yaml`) is validated at start-up; an invalid file stops the process and the error lists every offending key. The packet cache is off by default. See [docs/CONFIG.md](docs/CONFIG.md).
+`CONTEXT_CONFIG_PATH` (default `config/context.config.yaml`) is validated at start-up; an invalid file stops the process and the error lists every offending key. Per-source caching is off by default (`sources.<kind>.cache`). See [docs/CONFIG.md](docs/CONFIG.md) for turning caching on and reading `/metrics`.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

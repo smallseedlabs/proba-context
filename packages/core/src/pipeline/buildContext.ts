@@ -1,13 +1,20 @@
 import { randomUUID } from 'node:crypto';
+import {
+  baseFetchCacheParams,
+  buildCacheKey,
+  needFetchCacheParams,
+  sourceUsesGoalId,
+} from '../cache/index.js';
 import { SOURCE_NAMES } from '../config/index.js';
 import { computePacketHash } from '../hash/packetHash.js';
-import type { ResolvedIdentity, StepRoundRecord } from '../ports/index.js';
+import type { CachedSourcePayload, ResolvedIdentity, StepRoundRecord } from '../ports/index.js';
 import { stepRoundKey } from '../ports/index.js';
 import { validateContextRequest } from '../protocol.js';
 import type {
   ContextGap,
   ContextItem,
   ContextManifest,
+  ContextNeed,
   ContextPacket,
   ContextRequest,
   ContextSection,
@@ -17,7 +24,7 @@ import { BuildAudit } from './audit.js';
 import { applyBudget, itemTokens, type Candidate, type DropReason } from './budget.js';
 import { ContextBuildError } from './errors.js';
 import { runJob, type FetchOutcome } from './fetch.js';
-import { NEED_SECTION, planBuild } from './plan.js';
+import { NEED_SECTION, planBuild, type FetchJob } from './plan.js';
 import { sanitiseItem } from './sanitise.js';
 import { isInScope } from './scope.js';
 import { orderedSections, sectionTiers } from './sections.js';
@@ -43,6 +50,8 @@ interface SectionState {
   requested: boolean;
   returned: number;
   latencyMs: number;
+  /** True when every fetch for this section in this build was a cache hit. */
+  cacheHit: boolean;
   /** Items that survived validation, scope and policy checks and were sanitised. */
   candidates: Candidate[];
   drops: Map<DropReason, number>;
@@ -50,7 +59,7 @@ interface SectionState {
 }
 
 function emptyState(kind: SectionKind, requested: boolean): SectionState {
-  return { kind, requested, returned: 0, latencyMs: 0, candidates: [], drops: new Map() };
+  return { kind, requested, returned: 0, latencyMs: 0, cacheHit: false, candidates: [], drops: new Map() };
 }
 
 function countDrop(state: SectionState, reason: DropReason, n = 1): void {
@@ -191,13 +200,27 @@ async function run(
     });
   }
 
-  // Step 3: fetch planned jobs in parallel (needs-only when extending a prior packet).
+  // Step 3: fetch planned jobs in parallel (cache check → fetch → audit), needs-only when extending.
   const query = { identity, request };
   const outcomes = await Promise.all(
-    plan.jobs.map((job) => runJob(job, query, config.sources[job.kind].timeoutMs, deps.clock))
+    plan.jobs.map((job) =>
+      fetchWithCache(deps, job, query, identity, request, plan.templateVersion, plan.accepted)
+    )
   );
 
   for (const outcome of outcomes) {
+    if (outcome.cacheHit) {
+      await audit.emit('context.cache_hit', {
+        outcome: 'success',
+        durationMs: outcome.latencyMs,
+        details: { source: outcome.job.kind, counts: { returned: outcome.returned } },
+      });
+    } else if (outcome.cacheKey) {
+      await audit.emit('context.cache_miss', {
+        outcome: 'success',
+        details: { source: outcome.job.kind },
+      });
+    }
     await audit.emit('context.source_fetched', {
       outcome: outcome.status === 'ok' ? 'success' : 'failure',
       ...(outcome.status === 'ok' ? {} : { errorCode: outcome.status === 'timeout' ? 'source_timeout' : 'source_error' }),
@@ -212,6 +235,8 @@ async function run(
   const sanitiseOptions = { pii: config.redaction.pii, maxItemChars: config.limits.maxItemChars };
   let redactions = 0;
   const scopeViolations = new Map<SectionKind, number>();
+  /** Per-section: whether every outcome this round was a cache hit (and at least one ran). */
+  const cacheHitsSeen = new Map<SectionKind, { any: boolean; allHits: boolean }>();
 
   // Seed candidates from the prior packet when extending (deterministic merge).
   if (extendPrior && prior) {
@@ -231,6 +256,10 @@ async function run(
     const state = states.get(kind) as SectionState;
     state.returned += outcome.returned;
     state.latencyMs = Math.max(state.latencyMs, outcome.latencyMs);
+    const seen = cacheHitsSeen.get(kind) ?? { any: false, allHits: true };
+    seen.any = true;
+    if (!outcome.cacheHit) seen.allHits = false;
+    cacheHitsSeen.set(kind, seen);
     countDrop(state, 'invalid_item', outcome.returned - outcome.items.length);
 
     if (outcome.status !== 'ok') {
@@ -241,7 +270,7 @@ async function run(
       gaps.push(failureGap(kind, outcome));
     }
 
-    // Steps 4 and 5: scope, policy on tools, sanitise.
+    // Steps 4 and 5: scope, policy on tools, sanitise (idempotent on cache hits).
     const inScope: ContextItem[] = [];
     const outOfScope: ContextItem[] = [];
     for (const item of outcome.items) {
@@ -277,6 +306,7 @@ async function run(
       scopeViolations.set(kind, (scopeViolations.get(kind) ?? 0) + 1);
     }
 
+    const cleanedForCache: ContextItem[] = [];
     for (const item of inScope) {
       if (kind === 'tools' && !toolAllowed(deps, request, item)) {
         countDrop(state, 'policy_forbidden_tool');
@@ -285,7 +315,24 @@ async function run(
       const clean = sanitiseItem(kind, item, sanitiseOptions);
       redactions += clean.redactions;
       state.candidates.push({ kind, item: clean.item, tokens: itemTokens(deps.tokenizer, clean.item) });
+      cleanedForCache.push(clean.item);
     }
+
+    // Store already-redacted, in-scope items only (never on cache hit, never on failure).
+    if (
+      !outcome.cacheHit &&
+      outcome.cacheKey &&
+      outcome.status === 'ok' &&
+      deps.cache &&
+      config.sources[kind].cache.enabled
+    ) {
+      const payload: CachedSourcePayload = { items: cleanedForCache, returned: cleanedForCache.length };
+      await deps.cache.set(outcome.cacheKey, payload, config.sources[kind].cache.ttlSeconds);
+    }
+  }
+
+  for (const [kind, seen] of cacheHitsSeen) {
+    (states.get(kind) as SectionState).cacheHit = seen.any && seen.allHits;
   }
 
   for (const [kind, count] of scopeViolations) {
@@ -393,6 +440,8 @@ async function run(
     },
   });
 
+  recordBuildMetrics(deps, packet, states, gaps, elapsed());
+
   // Remember the packet so the next needs round can extend it.
   if (deps.stepRoundStore) {
     const roundsUsed = hasNeeds
@@ -419,6 +468,85 @@ async function run(
   return packet;
 }
 
+async function fetchWithCache(
+  deps: PipelineDeps,
+  job: FetchJob,
+  query: { identity: ResolvedIdentity; request: ContextRequest },
+  identity: ResolvedIdentity,
+  request: ContextRequest,
+  templateVersion: string,
+  acceptedNeeds: readonly ContextNeed[]
+): Promise<FetchOutcome> {
+  const sourceCfg = deps.config.sources[job.kind];
+  const cacheCfg = sourceCfg.cache;
+  const timeoutMs = sourceCfg.timeoutMs;
+  let cacheKey: string | undefined;
+
+  if (deps.cache && cacheCfg.enabled && cacheCfg.ttlSeconds > 0) {
+    const need = job.needKind ? acceptedNeeds.find((n) => n.kind === job.needKind) : undefined;
+    const params = need
+      ? needFetchCacheParams(need as { kind: string } & Record<string, unknown>)
+      : baseFetchCacheParams(identity, request, job.kind);
+    cacheKey = buildCacheKey({
+      source: job.kind,
+      workspaceId: identity.workspaceId,
+      userId: identity.userId,
+      ...(sourceUsesGoalId(job.kind) ? { goalId: identity.goalId } : {}),
+      params,
+      configVersion: deps.config.version,
+      templateVersion,
+    });
+    const started = deps.clock.now().getTime();
+    const hit = await deps.cache.get(cacheKey);
+    const latencyMs = Math.max(0, deps.clock.now().getTime() - started);
+    if (hit) {
+      deps.metrics?.incCacheHit(job.kind);
+      deps.metrics?.observeSourceLatency(job.kind, latencyMs);
+      return {
+        job,
+        status: 'ok',
+        items: hit.items,
+        returned: hit.returned,
+        latencyMs,
+        timeoutMs,
+        cacheHit: true,
+        cacheKey,
+      };
+    }
+    deps.metrics?.incCacheMiss(job.kind);
+  }
+
+  const outcome = await runJob(job, query, timeoutMs, deps.clock);
+  deps.metrics?.observeSourceLatency(job.kind, outcome.latencyMs);
+  if (!cacheKey) deps.metrics?.incSourceRequest(job.kind, 'fetch');
+  return { ...outcome, ...(cacheKey ? { cacheKey, cacheHit: false } : {}) };
+}
+
+function recordBuildMetrics(
+  deps: PipelineDeps,
+  packet: ContextPacket,
+  states: ReadonlyMap<SectionKind, SectionState>,
+  gaps: readonly ContextGap[],
+  durationMs: number
+): void {
+  const metrics = deps.metrics;
+  if (!metrics) return;
+  metrics.setConfigVersion(deps.config.version);
+  metrics.observeBuildDuration(durationMs, 'success');
+  let scopeDrops = 0;
+  for (const kind of SOURCE_NAMES) {
+    const state = states.get(kind) as SectionState;
+    const section = packet.sections.find((s) => s.kind === kind);
+    const included = section?.items.length ?? 0;
+    const dropped = Math.max(0, state.returned - included);
+    metrics.addItems(kind, state.returned, included, dropped);
+    if (section) metrics.addTokens(kind, section.tokens);
+    scopeDrops += state.drops.get('scope_violation') ?? 0;
+  }
+  metrics.addScopeViolations(scopeDrops);
+  for (const gap of gaps) metrics.incGap(gap.code);
+}
+
 function requiredByTemplate(deps: PipelineDeps, request: ContextRequest, kind: SectionKind): boolean {
   return deps.templates.get(request.stepType)?.sections.some((s) => s.kind === kind && s.required) ?? false;
 }
@@ -434,6 +562,7 @@ function fetchDetails(outcome: FetchOutcome): Record<string, unknown> {
     source: outcome.job.kind,
     ...(outcome.job.needKind ? { needKind: outcome.job.needKind } : {}),
     counts: { returned: outcome.returned, timeoutMs: outcome.timeoutMs },
+    ...(outcome.cacheHit !== undefined ? { cacheHit: outcome.cacheHit } : {}),
   };
 }
 
@@ -501,7 +630,7 @@ function buildManifest(
       included: inc,
       dropped: drop,
       droppedReasons: Object.fromEntries([...state.drops].sort(([a], [b]) => (a < b ? -1 : 1))),
-      cacheHit: false,
+      cacheHit: state.cacheHit,
       latencyMs: state.latencyMs,
       tokens: section?.tokens ?? 0,
     };

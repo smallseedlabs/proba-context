@@ -3,6 +3,7 @@ import type {
   AuditEmitter,
   AuditHistorySource,
   Clock,
+  ContextCache,
   ConversationSource,
   MemorySource,
   PolicyGuard,
@@ -13,6 +14,7 @@ import type {
   Tokenizer,
 } from '../ports/index.js';
 import type { ContextConfig, Template } from '../config/index.js';
+import type { ContextMetrics } from '../metrics/index.js';
 import type { StepType } from '../protocol.js';
 
 /** One source per section kind. */
@@ -44,4 +46,11 @@ export interface PipelineDeps {
    * `needs.maxRoundsPerStep` can be enforced. Required for the hybrid needs loop.
    */
   stepRoundStore?: StepRoundStore;
+  /**
+   * Per-source fetch cache. When omitted, every source is fetched (same as all sources
+   * having `cache.enabled: false`).
+   */
+  cache?: ContextCache;
+  /** Optional Prometheus metrics collector. */
+  metrics?: ContextMetrics;
 }

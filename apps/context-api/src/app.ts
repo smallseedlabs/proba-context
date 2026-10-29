@@ -20,7 +20,9 @@ import {
   type AdminAuthorizer,
   type AdminSession,
   type ContextBuildErrorCode,
+  type ContextCache,
   type ContextConfig,
+  type ContextMetrics,
   type IdentityCredentials,
   type IdentityResolver,
   type PacketStore,
@@ -36,6 +38,13 @@ export interface HealthResponse {
   service: typeof SERVICE_NAME;
 }
 
+export interface ReadyResponse {
+  status: 'ready' | 'not_ready';
+  service: typeof SERVICE_NAME;
+  configVersion: string;
+  checks: Record<string, 'ok' | 'fail'>;
+}
+
 /** What the context routes need. */
 export interface ContextServices {
   deps: PipelineDeps;
@@ -43,6 +52,8 @@ export interface ContextServices {
   rateLimiter: RateLimiter;
   rateLimit: { max: number; windowMs: number };
   packetStore: PacketStore;
+  cache: ContextCache;
+  metrics: ContextMetrics;
   admin?: AdminAuthorizer;
   /** Empty = CORS disabled (strict default). */
   corsOrigins: string[];
@@ -129,7 +140,40 @@ export async function buildApp(
 
   app.get('/health', async (): Promise<HealthResponse> => ({ status: 'ok', service: SERVICE_NAME }));
 
-  if (services) await registerContextRoutes(app, services);
+  if (services) {
+    app.get('/ready', async (_request, reply): Promise<ReadyResponse> => {
+      const checks: Record<string, 'ok' | 'fail'> = {
+        config: services.deps.config.version ? 'ok' : 'fail',
+      };
+      try {
+        await services.cache.ping?.();
+        checks.cache = 'ok';
+      } catch {
+        checks.cache = 'fail';
+      }
+      const ready = Object.values(checks).every((c) => c === 'ok');
+      const body: ReadyResponse = {
+        status: ready ? 'ready' : 'not_ready',
+        service: SERVICE_NAME,
+        configVersion: services.deps.config.version,
+        checks,
+      };
+      return reply.status(ready ? 200 : 503).send(body);
+    });
+
+    app.get('/metrics', async (request, reply) => {
+      // Internal/admin: Firebase admin when configured; otherwise open on the loopback network only
+      // (Compose binds 127.0.0.1). Do not put user ids or text in labels.
+      if (services.admin) {
+        const session = await requireAdmin(request, reply, services);
+        if (!session) return;
+      }
+      reply.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+      return reply.status(200).send(services.metrics.render());
+    });
+
+    await registerContextRoutes(app, services);
+  }
   return app;
 }
 
@@ -336,6 +380,37 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
       return reply.status(200).send(manifestOnly(record));
     }
   );
+
+  app.post(
+    '/v1/cache/invalidate',
+    { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
+    async (request, reply) => {
+      const session = await requireAdmin(request, reply, services);
+      if (!session) return;
+
+      const body = (request.body ?? {}) as { workspaceId?: string; userId?: string; goalId?: string };
+      const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
+      const goalId = typeof body.goalId === 'string' ? body.goalId.trim() : '';
+      const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId.trim() : '';
+      if (!userId && !goalId) {
+        return reply.status(400).send({
+          error: { code: 'invalid_request', message: 'Provide userId and/or goalId to invalidate.' },
+        });
+      }
+      const removed = await services.cache.invalidate({
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(userId ? { userId } : {}),
+        ...(goalId ? { goalId } : {}),
+      });
+      await auditCacheInvalidated(deps, session, {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(userId ? { userId } : {}),
+        ...(goalId ? { goalId } : {}),
+        counts: { removed },
+      });
+      return reply.status(200).send({ removed });
+    }
+  );
 }
 
 function manifestOnly(record: {
@@ -440,6 +515,31 @@ async function auditPacketView(
     actor: { type: 'user', id: session.subject },
     service: SERVICE_NAME,
     action: 'context.packet_viewed',
+    category: info?.category ?? 'data_access',
+    ...(info ? { riskLevel: info.riskLevel } : {}),
+    outcome: 'success',
+    occurredAt: deps.clock.now().toISOString(),
+    details: { ...details, role: session.role },
+  });
+  await deps.audit.emit(event);
+}
+
+async function auditCacheInvalidated(
+  deps: PipelineDeps,
+  session: AdminSession,
+  details: Record<string, unknown>
+): Promise<void> {
+  const info = getAuditActionInfo('context.cache_invalidated');
+  const event = buildAuditEvent({
+    eventId: crypto.randomUUID(),
+    traceId: crypto.randomUUID(),
+    spanId: generateSpanId(),
+    workspaceId: typeof details.workspaceId === 'string' ? details.workspaceId : 'seedbed',
+    ...(typeof details.userId === 'string' ? { userId: details.userId } : {}),
+    ...(typeof details.goalId === 'string' ? { goalId: details.goalId } : {}),
+    actor: { type: 'user', id: session.subject },
+    service: SERVICE_NAME,
+    action: 'context.cache_invalidated',
     category: info?.category ?? 'data_access',
     ...(info ? { riskLevel: info.riskLevel } : {}),
     outcome: 'success',
