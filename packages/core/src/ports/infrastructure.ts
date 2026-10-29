@@ -1,11 +1,37 @@
-import type { AuditEventInput, ContextManifest, ContextPacket } from '@smallseedlabs/proba-protocol';
+import type { AuditEventInput, ContextItem, ContextManifest } from '@smallseedlabs/proba-protocol';
 import type { ResolvedIdentity } from './common.js';
 
-/** Packet cache. Disabled unless `cache.enabled` is set in the config. */
+/**
+ * Already-redacted items for one source fetch, stored under a scoped cache key.
+ * Never contains item text that has not been through the bridge redactor.
+ */
+export interface CachedSourcePayload {
+  /** Items after scope and redaction. */
+  items: ContextItem[];
+  /** Raw count the source returned (before invalid-item drops), for manifest accounting. */
+  returned: number;
+}
+
+/** Filter for `ContextCache.invalidate` (admin). At least one of userId or goalId is required. */
+export interface CacheInvalidateFilter {
+  workspaceId?: string;
+  userId?: string;
+  goalId?: string;
+}
+
+/**
+ * Per-source fetch cache. Entries never cross users or workspaces; keys embed those ids.
+ * Disabled per source unless `sources.<kind>.cache.enabled` is set. Adapters: in-process LRU or Redis.
+ */
 export interface ContextCache {
-  get(key: string): Promise<ContextPacket | undefined>;
-  set(key: string, packet: ContextPacket, ttlSeconds: number): Promise<void>;
+  get(key: string): Promise<CachedSourcePayload | undefined>;
+  set(key: string, value: CachedSourcePayload, ttlSeconds: number): Promise<void>;
   delete(key: string): Promise<void>;
+  /** Drop entries matching the filter. Returns how many keys were removed. */
+  invalidate(filter: CacheInvalidateFilter): Promise<number>;
+  /** Optional readiness probe (Redis ping). */
+  ping?(): Promise<void>;
+  close?(): Promise<void>;
 }
 
 /** Token counting for budgeting. */
