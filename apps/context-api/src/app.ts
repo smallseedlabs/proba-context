@@ -140,40 +140,7 @@ export async function buildApp(
 
   app.get('/health', async (): Promise<HealthResponse> => ({ status: 'ok', service: SERVICE_NAME }));
 
-  if (services) {
-    app.get('/ready', async (_request, reply): Promise<ReadyResponse> => {
-      const checks: Record<string, 'ok' | 'fail'> = {
-        config: services.deps.config.version ? 'ok' : 'fail',
-      };
-      try {
-        await services.cache.ping?.();
-        checks.cache = 'ok';
-      } catch {
-        checks.cache = 'fail';
-      }
-      const ready = Object.values(checks).every((c) => c === 'ok');
-      const body: ReadyResponse = {
-        status: ready ? 'ready' : 'not_ready',
-        service: SERVICE_NAME,
-        configVersion: services.deps.config.version,
-        checks,
-      };
-      return reply.status(ready ? 200 : 503).send(body);
-    });
-
-    app.get('/metrics', async (request, reply) => {
-      // Internal/admin: Firebase admin when configured; otherwise open on the loopback network only
-      // (Compose binds 127.0.0.1). Do not put user ids or text in labels.
-      if (services.admin) {
-        const session = await requireAdmin(request, reply, services);
-        if (!session) return;
-      }
-      reply.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
-      return reply.status(200).send(services.metrics.render());
-    });
-
-    await registerContextRoutes(app, services);
-  }
+  if (services) await registerContextRoutes(app, services);
   return app;
 }
 
@@ -191,6 +158,41 @@ async function registerContextRoutes(app: FastifyInstance, services: ContextServ
       'x-ratelimit-reset': true,
       'retry-after': true,
     },
+  });
+
+  app.get(
+    '/ready',
+    { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } },
+    async (_request, reply): Promise<ReadyResponse> => {
+      const checks: Record<string, 'ok' | 'fail'> = {
+        config: services.deps.config.version ? 'ok' : 'fail',
+      };
+      try {
+        await services.cache.ping?.();
+        checks.cache = 'ok';
+      } catch {
+        checks.cache = 'fail';
+      }
+      const ready = Object.values(checks).every((c) => c === 'ok');
+      const body: ReadyResponse = {
+        status: ready ? 'ready' : 'not_ready',
+        service: SERVICE_NAME,
+        configVersion: services.deps.config.version,
+        checks,
+      };
+      return reply.status(ready ? 200 : 503).send(body);
+    }
+  );
+
+  app.get('/metrics', { config: { rateLimit: CONTEXT_ROUTE_RATE_LIMIT } }, async (request, reply) => {
+    // Internal/admin: Firebase admin when configured; otherwise open on the loopback network only
+    // (Compose binds 127.0.0.1). Do not put user ids or text in labels.
+    if (services.admin) {
+      const session = await requireAdmin(request, reply, services);
+      if (!session) return;
+    }
+    reply.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    return reply.status(200).send(services.metrics.render());
   });
 
   async function authenticate(request: FastifyRequest, body?: Record<string, unknown>): Promise<ResolvedIdentity> {
