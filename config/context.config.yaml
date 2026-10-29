@@ -107,12 +107,18 @@ allowedDownstreamHosts:
   - 127.0.0.1:3400
   - 127.0.0.1:3420
   - 127.0.0.1:3300
+  - 127.0.0.1:3500
+  # Umbrella local compose service names (proba/local/docker-compose.yml).
+  - hub:3000
+  - audit-api:3100
+  - memory-api:3200
   # Redis, where the audit stream and optional source cache live (REDIS_URL must point here).
   - redis:6379
   # Postgres packet store (DATABASE_URL). Host:port must match the URL.
   - postgres:5432
   - context-postgres:5432
   - 127.0.0.1:5432
+  - 127.0.0.1:55435
 
 limits:
   maxNeedsPerRequest: 20
