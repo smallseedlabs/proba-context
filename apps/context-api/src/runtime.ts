@@ -32,6 +32,7 @@ import {
   MemoryPacketStore,
   MemoryRateLimiter,
   MemoryStepRoundStore,
+  PostgresPacketStore,
   RedisContextCache,
   RedisJtiStore,
   RedisPacketStore,
@@ -41,6 +42,7 @@ import {
   UnconfiguredIdentityResolver,
   createHttpSources,
   createInProcessSources,
+  createPgPool,
   createRedisStreamAuditEmitter,
   createServiceTokenSigner,
   isLocalIdentityEnabled,
@@ -90,7 +92,8 @@ function truthy(value: string | undefined): boolean {
  * - Identity: `act_as_assertion` (default) verifies Hub assertions + Hub authorize; `firebase_passthrough`
  *   verifies Firebase ID tokens when configured; local identity only when `NODE_ENV!=production` and
  *   `identity.allowLocal` / `CONTEXT_ALLOW_LOCAL_IDENTITY`.
- * - Rate limits / jti / packet manifests: Redis in production (memory refused); memory outside production.
+ * - Rate limits / jti: Redis in production (memory refused); memory outside production.
+ * - Packet manifests: Postgres when `DATABASE_URL` is set (required in production); Redis or memory otherwise.
  * - Context cache: `cacheStore.backend` memory (LRU) or redis; per-source enable under `sources.*.cache`.
  */
 export function createRuntime(env: Env, configPath: string): Runtime {
@@ -99,6 +102,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
   const clock = new SystemClock();
   const production = env.NODE_ENV === 'production';
   const closers: Array<() => Promise<void>> = [];
+  const intervals: NodeJS.Timeout[] = [];
   const metrics = new ContextMetrics();
   metrics.setConfigVersion(config.version);
 
@@ -142,24 +146,51 @@ export function createRuntime(env: Env, configPath: string): Runtime {
   let jtiStore: JtiStore;
   let packetStore: PacketStore;
   let stepRoundStore: StepRoundStore;
+  const databaseUrl = env.DATABASE_URL?.trim();
+
   if (env.REDIS_URL) {
     rateLimiter = new RedisRateLimiter({ url: env.REDIS_URL, keyPrefix: 'proba:context:rl:' });
     jtiStore = new RedisJtiStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:jti:' });
-    packetStore = new RedisPacketStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:packet:' });
     stepRoundStore = new RedisStepRoundStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:step-round:' });
     closers.push(async () => {
       await rateLimiter.close?.();
       await jtiStore.close?.();
-      await packetStore.close?.();
       await stepRoundStore.close?.();
     });
   } else if (production) {
-    throw new Error('REDIS_URL is required when NODE_ENV=production for rate limits, jti store and packet manifests.');
+    throw new Error('REDIS_URL is required when NODE_ENV=production for rate limits and jti store.');
   } else {
     rateLimiter = new MemoryRateLimiter(clock, env.NODE_ENV);
     jtiStore = new MemoryJtiStore(clock, env.NODE_ENV);
-    packetStore = new MemoryPacketStore(env.NODE_ENV);
     stepRoundStore = new MemoryStepRoundStore(env.NODE_ENV);
+  }
+
+  if (databaseUrl) {
+    const host = hostOf(databaseUrl, '5432');
+    if (!config.allowedDownstreamHosts.includes(host)) {
+      throw new ConfigError('DATABASE_URL', [`host "${host}" is not in allowedDownstreamHosts`]);
+    }
+    const pool = createPgPool(databaseUrl);
+    packetStore = new PostgresPacketStore({ pool, clock });
+    closers.push(() => packetStore.close?.() ?? Promise.resolve());
+    const purgeMinutes = config.packetStore.purgeIntervalMinutes;
+    if (purgeMinutes > 0) {
+      const runPurge = () => {
+        const olderThan = new Date(clock.now().getTime() - config.packetStore.retentionDays * 24 * 3600 * 1000);
+        void packetStore.purgeExpired?.(olderThan).catch(() => undefined);
+      };
+      runPurge();
+      intervals.push(setInterval(runPurge, purgeMinutes * 60_000));
+    }
+  } else if (production) {
+    throw new Error(
+      'DATABASE_URL is required when NODE_ENV=production: packet manifests must live in Postgres (context_packets).'
+    );
+  } else if (env.REDIS_URL) {
+    packetStore = new RedisPacketStore({ url: env.REDIS_URL, keyPrefix: 'proba:context:packet:' });
+    closers.push(() => packetStore.close?.() ?? Promise.resolve());
+  } else {
+    packetStore = new MemoryPacketStore(env.NODE_ENV);
   }
 
   const memoryBaseUrl = env.MEMORY_API_BASE_URL?.trim();
@@ -394,6 +425,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
       services.deps.policyGuard = policy.guard;
     },
     close: async () => {
+      for (const id of intervals) clearInterval(id);
       for (const close of closers) await close();
     },
   };

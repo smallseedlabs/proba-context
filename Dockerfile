@@ -1,6 +1,6 @@
 # One Dockerfile, one target per process:
 #   docker build --target context-api -t proba-context-api .
-# Targets: context-api
+# Targets: context-api, migrate
 
 # Stage 1: build every workspace
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS builder
@@ -50,3 +50,8 @@ EXPOSE 3500
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:'+process.env.PORT+'/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 CMD ["node", "apps/context-api/dist/index.js"]
+
+# One-shot job: apply the Postgres migrations for context_packets.
+FROM runtime AS migrate
+COPY --chown=proba:proba migrations ./migrations
+CMD ["node", "packages/adapters/dist/postgres/migrate-cli.js"]

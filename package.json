@@ -20,6 +20,7 @@
     "test:watch": "NODE_ENV=test vitest",
     "watch:api": "tsx watch apps/context-api/src/index.ts",
     "compose:check": "node scripts/check-compose-security.mjs",
+    "migrate": "node packages/adapters/dist/postgres/migrate-cli.js",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"

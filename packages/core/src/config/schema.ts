@@ -230,6 +230,18 @@ export const redactionConfigSchema = z
 
 export type RedactionConfig = z.infer<typeof redactionConfigSchema>;
 
+/** Manifest retention for the Postgres `context_packets` table (never stores item text). */
+export const packetStoreConfigSchema = z
+  .object({
+    /** How long manifests are kept. Default 7 days. */
+    retentionDays: z.number().int().positive().max(365).default(7),
+    /** How often the in-process purge tick runs (minutes). 0 disables the timer (migrate/CLI still purge). */
+    purgeIntervalMinutes: z.number().int().nonnegative().max(24 * 60).default(60),
+  })
+  .strict();
+
+export type PacketStoreConfig = z.infer<typeof packetStoreConfigSchema>;
+
 export const contextConfigSchema = z
   .object({
     version: z.string().min(1),
@@ -237,6 +249,8 @@ export const contextConfigSchema = z
     sources: z.object(sourcesShape).strict(),
     /** Which adapter backs the shared `ContextCache` (per-source enable lives under each source). */
     cacheStore: cacheStoreConfigSchema.default({}),
+    /** Postgres packet-manifest retention and purge cadence. */
+    packetStore: packetStoreConfigSchema.default({}),
     budget: budgetConfigSchema,
     /** Hosts the service may call (proba-audit, proba-memory, ...). Everything else is refused. */
     allowedDownstreamHosts: z.array(hostSchema).max(32),

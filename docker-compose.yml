@@ -1,5 +1,6 @@
 # Local stack for proba-context.
-#   export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=... REDIS_PASSWORD=...   (or put them in an untracked .env)
+#   export AUDIT_API_TOKEN=... MEMORY_API_TOKEN=... REDIS_PASSWORD=... POSTGRES_PASSWORD=...
+#   (or put them in an untracked .env)
 #   docker compose up --build
 # Every published port is bound to 127.0.0.1 and no secret has a default: Compose refuses to start until
 # each ${NAME:?...} variable is set. scripts/check-compose-security.mjs enforces both in CI.
@@ -22,9 +23,55 @@ services:
       MEMORY_API_TOKEN: ${MEMORY_API_TOKEN:?set MEMORY_API_TOKEN}
       # Audit events go to the Redis stream proba.audit.events.
       REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+      # Packet manifests (no section payloads).
+      DATABASE_URL: postgresql://proba:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/proba_context
     depends_on:
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    build:
+      context: .
+      target: migrate
+    image: proba-context-migrate:local
+    environment:
+      DATABASE_URL: postgresql://proba:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/proba_context
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: proba
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: proba_context
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - context_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proba -d proba_context"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    read_only: false
     cap_drop:
       - ALL
     security_opt:
@@ -42,3 +89,6 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  context_postgres_data:

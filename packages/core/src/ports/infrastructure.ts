@@ -114,6 +114,8 @@ export interface PacketRecord {
   userId: string;
   goalId: string;
   stepId: string;
+  /** Step type from the request (e.g. propose_budget). Optional on older Redis rows. */
+  stepType?: string;
   configVersion: string;
   templateVersion: string;
   manifest: ContextManifest;
@@ -125,6 +127,10 @@ export interface PacketStore {
   put(record: PacketRecord): Promise<void>;
   get(packetId: string): Promise<PacketRecord | undefined>;
   listByGoal(goalId: string, options?: { limit?: number; cursor?: string }): Promise<{ items: PacketRecord[]; nextCursor?: string }>;
+  /** Drop manifests older than `olderThan` (UTC). Returns how many rows were removed. */
+  purgeExpired?(olderThan: Date): Promise<number>;
+  /** Optional readiness probe (Postgres SELECT 1 / Redis PING). */
+  ping?(): Promise<void>;
   close?(): Promise<void>;
 }
 

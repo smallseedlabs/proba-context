@@ -84,6 +84,9 @@ export {
   RedisPacketStore,
   type RedisPacketStoreOptions,
 } from './identity/packetStore.js';
+export { createPgPool } from './postgres/pool.js';
+export { migrate, readMigrations, DEFAULT_MIGRATIONS_DIR, type MigrateOptions, type MigrationResult } from './postgres/migrate.js';
+export { PostgresPacketStore, type PostgresPacketStoreOptions } from './postgres/packetStore.js';
 export {
   FirebaseTokenVerifier,
   FIREBASE_JWKS_URL,
