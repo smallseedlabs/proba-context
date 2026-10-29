@@ -17,6 +17,8 @@ import type {
   ResolvedIdentity,
   SourceQuery,
   SourceResult,
+  StepRoundRecord,
+  StepRoundStore,
   TaskStateSource,
   Tokenizer,
   ToolCatalogSource,
@@ -174,10 +176,28 @@ export function loadFixtureConfig(): ContextConfig {
   return loadContextConfig(join(configDir, 'context.config.yaml'));
 }
 
+/** In-process step-round store for pipeline tests. */
+export class FixtureStepRoundStore implements StepRoundStore {
+  readonly records = new Map<string, StepRoundRecord>();
+
+  async get(key: string): Promise<StepRoundRecord | undefined> {
+    return this.records.get(key);
+  }
+
+  async put(record: StepRoundRecord): Promise<void> {
+    this.records.set(record.key, record);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.records.delete(key);
+  }
+}
+
 export interface Harness {
   deps: PipelineDeps;
   sources: FixtureSources;
   audit: RecordingAuditEmitter;
+  stepRounds: FixtureStepRoundStore;
 }
 
 export function harness(configure?: (config: ContextConfig) => void): Harness {
@@ -185,10 +205,12 @@ export function harness(configure?: (config: ContextConfig) => void): Harness {
   configure?.(config);
   const sources = new FixtureSources();
   const audit = new RecordingAuditEmitter();
+  const stepRounds = new FixtureStepRoundStore();
   const ids = counterIds();
   return {
     sources,
     audit,
+    stepRounds,
     deps: {
       config,
       templates: loadTemplates(join(configDir, 'templates')),
@@ -198,6 +220,7 @@ export function harness(configure?: (config: ContextConfig) => void): Harness {
       clock: fixedClock,
       audit,
       newId: ids,
+      stepRoundStore: stepRounds,
     },
   };
 }

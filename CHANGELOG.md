@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Phase 4 hybrid needs loop: registered `NeedHandler`s for `memory_search`, `analytics_compare`, `audit_trace` and `conversation_before`; `needs` config (`maxRoundsPerStep` default 2, `extraTokenShare` default 0.3, per-kind `maxItems` / `maxTokens` / `allowedWindows`); step-round store so a needs round extends the prior packet and re-budgets; `context.need_requested` / refusal gaps with `suggestedQuestion`; `GET /v1/context/needs` returns kinds with limits; docs in [docs/NEEDS.md](docs/NEEDS.md).
 - Phase 3 identity: `ActAsIdentityResolver` verifies Hub act-as assertions (`aud` contains `proba-context`; rejects expired, wrong issuer, `nbf`, forged and replayed `jti`), claims jtis in Redis (memory refused in production), and calls Hub `POST /v1/internal/authorize` (optional cache via `identity.authorizeCache`). `firebase_passthrough` verifies Firebase ID tokens when configured. Local identity only behind `NODE_ENV!=production` and `identity.allowLocal` / `CONTEXT_ALLOW_LOCAL_IDENTITY`.
 - Admin `GET /v1/context/packets` and `GET /v1/context/packets/{id}` (Firebase allow-list, admin/viewer): viewers get 403; admins see the manifest only. Packet manifests stored in Redis (production) or memory (non-production).
 - Per-caller and per-user rate limits (Redis in production), request size caps, strict CORS (none by default), `Cache-Control: no-store`, `auth.denied` audits on 401/403, scope-violation counter.

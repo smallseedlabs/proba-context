@@ -81,6 +81,32 @@ limits:
   maxItemChars: 4000
   maxRequestBytes: 65536
 
+# Hybrid needs loop (Phase 4). After the first template packet the brain may ask typed needs.
+needs:
+  # Extra needs rounds per step after the template-only packet.
+  maxRoundsPerStep: 2
+  # Extra share of the base budget on a needs round (0.3 = 30 percent).
+  extraTokenShare: 0.3
+  kinds:
+    memory_search:
+      source: memory
+      maxItems: 20
+      maxTokens: 1500
+    analytics_compare:
+      source: analytics
+      maxItems: 10
+      maxTokens: 1000
+      # 90d is outside policy for v1; refused with need_out_of_limits.
+      allowedWindows: [1d, 7d, 14d, 30d]
+    audit_trace:
+      source: audit_history
+      maxItems: 100
+      maxTokens: 2000
+    conversation_before:
+      source: conversation
+      maxItems: 50
+      maxTokens: 2000
+
 redaction:
   # Secrets are always redacted. pii also redacts email, phone, card (Luhn), IBAN and SSN.
   pii: true

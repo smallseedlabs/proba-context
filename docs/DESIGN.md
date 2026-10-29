@@ -39,17 +39,17 @@ flowchart LR
 ```
 
 1. **Authorise.** The identity is already resolved (see Identity). The request's `workspaceId`, `userId`, `goalId` and `threadId` must equal the identity's, otherwise the build fails with `identity_mismatch` (HTTP 403) and `context.build_failed` with outcome `denied`. Audit events use the identity's ids, never the body's.
-2. **Plan.** The template for the step type (highest `<stepType>.v<N>.yaml`) lists the sections. Typed needs are merged in. A need becomes a gap and never reaches a source when:
+2. **Plan.** The template for the step type (highest `<stepType>.v<N>.yaml`) lists the sections. Typed needs are checked by registered `NeedHandler`s (see [NEEDS](NEEDS.md)). A need becomes a gap and never reaches a source when:
    - policy forbids that kind for the step (`restrictedNeeds` in `policy.yaml`) or its source is switched off: `need_refused_by_policy`;
-   - it is beyond `limits.maxNeedsPerRequest`, or asks for more than `limits.maxItemsPerSource` items: `need_out_of_limits`.
+   - it is beyond `limits.maxNeedsPerRequest`, kind `maxItems`, a disallowed analytics window, the step's `needs.maxRoundsPerStep`, or a budget above the extra token share: `need_out_of_limits`.
 
-   An allowed need for a section the template lacks adds that section as optional (and only the need's call is made, not the section's base fetch). Each refusal emits `context.need_refused`.
-3. **Fetch.** Every source call runs in parallel, each under its source's `timeoutMs` (an `AbortSignal` is passed to the source). A call that fails or times out yields no items and a gap: `source_timeout`, or `<source>_unavailable` (`conversation_unavailable`, `memory_unavailable`, `audit_history_unavailable`, `analytics_unavailable`, `tools_unavailable`, `task_unavailable`). **A failure of `policy` or `task` when the template requires it fails the build** (`required_source_failed`, HTTP 502), as does a template-required `policy` or `task` source that is switched off. Items that are not valid `ContextItem`s are dropped (`invalid_item`). One `context.source_fetched` event is written per call.
+   An allowed need for a section the template lacks adds that section as optional (and only the need's call is made, not the section's base fetch). When a prior packet exists for the same step, the plan is **needs-only** and the prior sections are merged in (packet extension). Each refusal emits `context.need_refused`; each accepted need emits `context.need_requested`.
+3. **Fetch.** Every source call runs in parallel, each under its source's `timeoutMs` (an `AbortSignal` is passed to the source). A call that fails or times out yields no items and a gap: `source_timeout`, or `<source>_unavailable` (`conversation_unavailable`, `memory_unavailable`, `audit_history_unavailable`, `analytics_unavailable`, `tools_unavailable`, `task_unavailable`). **A failure of `policy` or `task` when the template requires it fails the build** (`required_source_failed`, HTTP 502), as does a template-required `policy` or `task` source that is switched off. Items that are not valid `ContextItem`s are dropped (`invalid_item`). A need whose every returned item is out of scope is refused (`need_refused_by_policy`) so nothing leaks. One `context.source_fetched` event is written per call.
 4. **Scope.** The second line of defence after sources are queried with the identity: an item whose `data.workspaceId` or `data.userId` is present and differs from the identity's (or is not a string) is dropped, counted as `scope_violation`, and one `context.scope_violation` event (outcome `denied`) is written per source. The manifest does not list the ids of such items. Tool items must carry `data.name`, and a tool that policy restricts for the step is dropped (`policy_forbidden_tool`), so a forbidden tool cannot reach a packet even if the catalog source returns it.
 5. **Sanitise.** Text and every string inside `data` are redacted (see Redaction); string values under id-like keys (`userId`, `*_id`, ...) only lose secrets so that ids are not mangled. Text is cut at `limits.maxItemChars`. Trust is clamped to the section's ceiling: `policy`, `task`, `tools` may be `system`; `conversation` at most `user`; `memory`, `audit_history`, `analytics` at most `derived`. A source can lower trust (down to `external`) but never raise it. The source's own objects are copied, not changed.
 6. **Budget** (below).
 7. **Assemble.** Sections are ordered by tier, then configured priority; empty sections are omitted. Conversation items read in time order, other sections in rank order. The packet is hashed with `computePacketHash` over everything except `packetHash`.
-8. **Audit.** `context.requested` first, then (in this order) `context.need_refused`, `context.source_fetched` per call, `context.scope_violation`, `context.gap_detected` per gap, and finally `context.built` (outcome `success`, `packetId`, `packetHash` and counts) or `context.build_failed` (outcome `failure` or `denied`, `errorCode`). Details are limited to ids, source and need kinds, gap codes and counts. If an event cannot be written the build fails with `audit_unavailable` (HTTP 503): nothing is returned without its audit record.
+8. **Audit.** `context.requested` first, then (in this order) `context.need_refused` / `context.need_requested`, `context.source_fetched` per call, further `context.need_refused` for out-of-scope need results, `context.scope_violation`, `context.gap_detected` per gap, and finally `context.built` (outcome `success`, `packetId`, `packetHash` and counts) or `context.build_failed` (outcome `failure` or `denied`, `errorCode`). Details are limited to ids, source and need kinds, gap codes and counts. If an event cannot be written the build fails with `audit_unavailable` (HTTP 503): nothing is returned without its audit record.
 9. **Return** the `ContextPacket`.
 
 ### Budgeting
@@ -121,7 +121,7 @@ Audit sink selection (`runtime.ts`): with `REDIS_URL` set (host must be in `allo
 |-----------------|---------|
 | `GET /health` | Liveness. |
 | `POST /v1/context/build` | Body: `ContextRequest` (validated with the protocol's zod schema). 200 with a `ContextPacket`. |
-| `GET /v1/context/needs?stepType=` | Need kinds the brain may ask for in that step: the protocol's four kinds minus `restrictedNeeds` and minus kinds whose source is disabled. |
+| `GET /v1/context/needs?stepType=` | Allowed need kinds for that step (with `maxItems`, `maxTokens`, optional `allowedWindows`), plus `maxRoundsPerStep` and `extraTokenShare`. See [NEEDS](NEEDS.md). |
 | `GET /v1/context/packets?goalId=` | Admin (Firebase): paginated packet manifests for a goal. Viewers get 403. |
 | `GET /v1/context/packets/{packetId}` | Admin (Firebase): one packet's manifest only. Viewers get 403. |
 
@@ -140,7 +140,7 @@ Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "
 
 ## Ports
 
-`ConversationSource`, `TaskStateSource`, `MemorySource`, `AuditHistorySource`, `AnalyticsSource` (with `overview` for the goal-level read and `compare` for the `analytics_compare` need), `PolicySource`, `ToolCatalogSource`, `PolicyGuard`, `ContextCache`, `Tokenizer`, `AuditEmitter`, `Clock`, `IdentityResolver`. `PolicyGuard` carries the two rules the pipeline enforces itself: which needs are allowed for a step, and which tools are never allowed for a step.
+`ConversationSource`, `TaskStateSource`, `MemorySource`, `AuditHistorySource`, `AnalyticsSource` (with `overview` for the goal-level read and `compare` for the `analytics_compare` need), `PolicySource`, `ToolCatalogSource`, `PolicyGuard`, `NeedHandler` (one registered handler per need kind), `StepRoundStore` (prior packet sections per step for the needs loop), `ContextCache`, `Tokenizer`, `AuditEmitter`, `Clock`, `IdentityResolver`. `PolicyGuard` carries the two rules the pipeline enforces itself: which needs are allowed for a step, and which tools are never allowed for a step.
 
 ## Packet hash
 
@@ -154,6 +154,7 @@ Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "
 | 1 | Pipeline, redaction, budgeting, scope filter, config-file policy and tools, Redis stream audit, local identity, `POST /v1/context/build` |
 | 2 | HTTP sources for memory, audit history and analytics; Hub conversation/task still empty until brief 05 merges |
 | 3 | Act-as assertion verification, Hub authorize, admin Firebase packet routes, rate limits, jti replay store |
+| 4 | Hybrid needs loop: registered `NeedHandler`s, round / extra-token caps, packet extension, `GET /v1/context/needs` with limits, [NEEDS](NEEDS.md) |
 
 ## Open questions
 

@@ -97,7 +97,8 @@ Variations:
 
 - A source times out: its `context.source_fetched` has outcome `failure` and `errorCode: source_timeout`, and a `context.gap_detected` follows with `gapCode: source_timeout`. If it was `policy` or `task`, the build ends with `context.build_failed` instead of `context.built`.
 - The brain asks for a need policy forbids (for example `audit_trace` in this step): `context.need_refused` (outcome `denied`) after `context.requested`, and a `need_refused_by_policy` gap.
-- A source returns an item of another user: `context.scope_violation` (outcome `denied`) after the `source_fetched` events; the item is not in the packet.
+- The brain asks `analytics_compare` with `window: "90d"` (outside `needs.kinds.analytics_compare.allowedWindows`): `context.need_refused` with `need_out_of_limits`; the prior packet is extended without that need. See [NEEDS](NEEDS.md).
+- A source returns an item of another user: `context.scope_violation` (outcome `denied`) after the `source_fetched` events; the item is not in the packet. An `audit_trace` need whose every item is out of scope is refused entirely (`need_refused_by_policy`).
 - The budget cannot hold policy, task and tools: `context.build_failed` with `errorCode: budget_exceeded_by_required`.
 - The identity and the body disagree: `context.requested`, then `context.build_failed` with outcome `denied` and `errorCode: identity_mismatch`; no source is called.
 

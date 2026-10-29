@@ -7,6 +7,7 @@ import type {
   MemorySource,
   PolicyGuard,
   PolicySource,
+  StepRoundStore,
   TaskStateSource,
   ToolCatalogSource,
   Tokenizer,
@@ -38,4 +39,9 @@ export interface PipelineDeps {
   newId?: () => string;
   /** Value of the `service` field of audit events. Defaults to `proba-context`. */
   serviceName?: string;
+  /**
+   * Stores the latest packet sections per step so a needs round can extend it and so
+   * `needs.maxRoundsPerStep` can be enforced. Required for the hybrid needs loop.
+   */
+  stepRoundStore?: StepRoundStore;
 }

@@ -13,6 +13,7 @@ The service reads `CONTEXT_CONFIG_PATH` (default `config/context.config.yaml`) a
 | `budget` | `defaultTokens`, `maxTokens` (a request's `budgetTokens` is capped by it), and `priorities` per section kind (lower is kept first). Policy, task and tools are never dropped whatever their priority; the others are trimmed in reverse priority order. |
 | `allowedDownstreamHosts` | Hosts (`host` or `host:port`) the service may call (SSRF guard). The hosts of `REDIS_URL`, `MEMORY_API_BASE_URL`, `AUDIT_API_BASE_URL` and `HUB_BASE_URL` must be listed (`redis:6379`, `proba-memory:3420`, `proba-audit:3400`, `proba-hub:3300` in the shipped file). |
 | `limits` | `maxNeedsPerRequest`, `maxItemsPerSource`, `maxItemChars`, `maxRequestBytes`. |
+| `needs` | Hybrid needs loop (defaults applied when omitted): `maxRoundsPerStep` (default `2`), `extraTokenShare` (default `0.3`), and `kinds.<needKind>` with `source`, `maxItems`, `maxTokens`, and for `analytics_compare` `allowedWindows`. See [NEEDS](NEEDS.md). |
 | `redaction.pii` | Default `true`. Redact email, phone, card, IBAN and SSN as well as secrets. Secrets are always redacted. |
 
 Unknown keys are rejected. The config file's directory also holds everything else the service reads: `templates/`, `policy.yaml` and `tools.yaml`.

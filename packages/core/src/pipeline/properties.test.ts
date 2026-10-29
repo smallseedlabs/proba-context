@@ -153,6 +153,55 @@ describe('property: scope', () => {
   });
 });
 
+describe('property: needs', () => {
+  it('never serves a restricted need and never exceeds the round or item caps', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom<'memory_search' | 'analytics_compare' | 'audit_trace' | 'conversation_before'>(
+          'memory_search',
+          'analytics_compare',
+          'audit_trace',
+          'conversation_before'
+        ),
+        fc.integer({ min: 1, max: 20 }),
+        async (kind, limit) => {
+          const h = harness((c) => {
+            c.needs.maxRoundsPerStep = 2;
+            c.needs.kinds.memory_search.maxItems = 5;
+            c.needs.kinds.conversation_before.maxItems = 5;
+          });
+          requiredItems(h.sources);
+          await buildContext(h.deps, request({ stepId: 'prop-needs' }), identity());
+
+          const need =
+            kind === 'memory_search'
+              ? { kind, query: 'q', limit }
+              : kind === 'conversation_before'
+                ? { kind, cursor: 'c1', limit }
+                : kind === 'analytics_compare'
+                  ? { kind, campaignIds: [IDS.goal], metric: 'spend' as const, window: '7d' as const }
+                  : { kind, traceId: IDS.trace };
+
+          const packet = await buildContext(h.deps, request({ stepId: 'prop-needs', needs: [need] }), identity());
+          const refused = packet.gaps.filter((g) => g.code === 'need_refused_by_policy' || g.code === 'need_out_of_limits');
+
+          if (kind === 'audit_trace') {
+            // propose_budget restricts audit_trace
+            expect(refused.length).toBeGreaterThanOrEqual(1);
+            expect(h.sources.calls).not.toContain('audit_history.trace');
+          } else if ((kind === 'memory_search' || kind === 'conversation_before') && limit > 5) {
+            expect(refused.some((g) => g.code === 'need_out_of_limits')).toBe(true);
+          } else {
+            expect(h.audit.actions).toContain('context.need_requested');
+          }
+          expect(packet.manifest.totals.returned).toBe(packet.manifest.totals.included + packet.manifest.totals.dropped);
+        }
+      ),
+      { numRuns: 40 }
+    );
+  });
+});
+
 describe('property: redaction', () => {
   const secret = ['ghp', '_', 'q'.repeat(36)].join('');
   it('never lets a secret survive into the packet or the audit events', async () => {

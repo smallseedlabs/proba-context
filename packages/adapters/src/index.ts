@@ -150,3 +150,9 @@ export {
   SourceAdapterError,
 } from './http/errors.js';
 export { requireActAsAssertion, scopeParams } from './http/actAs.js';
+export {
+  MemoryStepRoundStore,
+  MemoryStepRoundStoreRefusedError,
+  RedisStepRoundStore,
+  type RedisStepRoundStoreOptions,
+} from './needs/stepRoundStore.js';
