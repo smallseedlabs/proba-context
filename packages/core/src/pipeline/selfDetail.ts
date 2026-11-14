@@ -30,7 +30,7 @@ const CONTEXT_TOOL_TAGS: Readonly<Record<string, readonly string[]>> = {
 
 /** Words in the operator's own messages -> tags. Matched case-insensitively on word boundaries. */
 const WORD_TAGS: ReadonlyArray<[RegExp, readonly string[]]> = [
-  [/\b(research|audience|competitors?|subreddits?|market)\b/i, ['tool:research.gather', 'topic:research']],
+  [/\b(research|audience|competitors?|subreddits?|market|search|web)\b/i, ['tool:research.gather', 'tool:web.search', 'topic:research']],
   [/\b(landing|url|website|web ?page|link)\b/i, ['need:landing_url', 'topic:landing']],
   [/\b(copy|headlines?|creative|ad text|wording|post text)\b/i, ['need:creative', 'topic:creative']],
   [/\b(launch|go live|create (a |the )?campaign|start (a |the )?campaign)\b/i, ['tool:ads.create_campaign', 'topic:launch']],
