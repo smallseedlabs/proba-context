@@ -16,3 +16,12 @@ export {
   memorySearchHandler,
 } from './needs/handlers.js';
 export { listAllowedNeeds, type AllowedNeedKind } from './needs/listAllowed.js';
+export {
+  SELF_DETAIL_MIN_WEIGHT,
+  SELF_MEMORY_SOURCE,
+  isSelfDetail,
+  scoreSelfDetails,
+  selfDetailSignals,
+  selfDetailWeight,
+  type SelfDetailInputs,
+} from './selfDetail.js';
