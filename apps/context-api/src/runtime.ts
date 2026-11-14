@@ -38,6 +38,7 @@ import {
   RedisPacketStore,
   RedisRateLimiter,
   RedisStepRoundStore,
+  SelfAwareMemorySource,
   SelfAwarePolicySource,
   SystemClock,
   UnconfiguredIdentityResolver,
@@ -320,12 +321,22 @@ export function createRuntime(env: Env, configPath: string): Runtime {
             console.warn(JSON.stringify({ level: 'warn', service: 'proba-context', msg: 'self memory unavailable; packet has policy statements only', reason })),
         })
       : base;
+  // Its detail entries are memory-section candidates, kept only when relevant to the run (core: scoreSelfDetails).
+  const memoryWithSelf =
+    http?.memory && http.self
+      ? new SelfAwareMemorySource({
+          base: http.memory,
+          self: http.self,
+          onSelfUnavailable: (reason) =>
+            console.warn(JSON.stringify({ level: 'warn', service: 'proba-context', msg: 'self detail unavailable; memory section has user memories only', reason })),
+        })
+      : http?.memory;
 
   let sources = createInProcessSources({
     policy: withSelf(policy.policy),
     tools: policy.tools,
     clock,
-    ...(http?.memory ? { memory: http.memory } : {}),
+    ...(memoryWithSelf ? { memory: memoryWithSelf } : {}),
     ...(http?.auditHistory ? { auditHistory: http.auditHistory } : {}),
     ...(http?.analytics ? { analytics: http.analytics } : {}),
     ...(http?.task ? { task: http.task } : {}),
@@ -423,7 +434,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
         policy: withSelf(policy.policy),
         tools: policy.tools,
         clock,
-        ...(http?.memory ? { memory: http.memory } : {}),
+        ...(memoryWithSelf ? { memory: memoryWithSelf } : {}),
         ...(http?.auditHistory ? { auditHistory: http.auditHistory } : {}),
         ...(http?.analytics ? { analytics: http.analytics } : {}),
         ...(http?.task ? { task: http.task } : {}),

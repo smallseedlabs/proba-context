@@ -27,6 +27,7 @@ import { runJob, type FetchOutcome } from './fetch.js';
 import { NEED_SECTION, planBuild, type FetchJob } from './plan.js';
 import { sanitiseItem } from './sanitise.js';
 import { isInScope } from './scope.js';
+import { isSelfDetail, scoreSelfDetails, selfDetailSignals } from './selfDetail.js';
 import { orderedSections, sectionTiers } from './sections.js';
 import type { PipelineDeps } from './types.js';
 
@@ -333,6 +334,18 @@ async function run(
 
   for (const [kind, seen] of cacheHitsSeen) {
     (states.get(kind) as SectionState).cacheHit = seen.any && seen.allHits;
+  }
+
+  // Step 5b: Proba's self detail entries (memory section) stay only when their tags match this run; see selfDetail.ts.
+  const memoryState = states.get('memory');
+  if (memoryState && memoryState.candidates.some((c) => isSelfDetail(c.item))) {
+    const itemsOf = (kind: SectionKind) => states.get(kind)?.candidates.map((c) => c.item) ?? [];
+    const signals = selfDetailSignals({ request, task: itemsOf('task'), tools: itemsOf('tools'), conversation: itemsOf('conversation') });
+    const { kept } = scoreSelfDetails(
+      memoryState.candidates.map((c) => c.item),
+      signals
+    );
+    memoryState.candidates = kept.map((item) => ({ kind: 'memory' as const, item, tokens: itemTokens(deps.tokenizer, item) }));
   }
 
   for (const [kind, count] of scopeViolations) {

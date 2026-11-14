@@ -29,6 +29,32 @@ describe('SelfMemoryHttpSource', () => {
     expect(Object.keys(items[0].data as object)).not.toContain('userId');
   });
 
+  it('v2: the core is a policy item whose text is exactly the stored core; tagged details are separate, unscored candidates', async () => {
+    const v2 = {
+      version: '2026-11-14.3',
+      core: { id: 'aa0e8400-e29b-41d4-a716-000000000000', key: '00-core', version: '2026-11-14.3', content: 'You are Proba.' },
+      memories: [
+        { id: 'aa0e8400-e29b-41d4-a716-000000000010', key: '10-limb-research', version: '2026-11-14.3', title: 'Limb: research.gather', content: 'Needs a landing page.', category: 'semantic', tier: 'detail', tags: ['tool:research.gather'], validFrom: '2026-11-14T00:00:00.000Z' },
+        { id: 'aa0e8400-e29b-41d4-a716-000000000000', key: '00-core', version: '2026-11-14.3', title: 'Proba (core)', content: 'You are Proba.', category: 'procedural', tier: 'core', tags: [], validFrom: '2026-11-14T00:00:00.000Z' },
+      ],
+    };
+    const { fetchImpl, calls } = recordingFetch(() => jsonResponse(200, v2));
+    const source = new SelfMemoryHttpSource({ client: clientFor('http://memory.test', 'proba-memory', fetchImpl) });
+    const core = await source.fetchSelf(actingQuery());
+    const details = await source.fetchDetails(actingQuery());
+    expect(calls).toHaveLength(1);
+    expect(core).toHaveLength(1);
+    expect(core[0]).toMatchObject({ itemId: 'self.00-core', text: 'You are Proba.', trust: 'system', score: 1, data: { tier: 'core' } });
+    expect(details).toHaveLength(1);
+    expect(details[0]).toMatchObject({
+      itemId: 'self.10-limb-research',
+      sourceRef: { source: SELF_MEMORY_SOURCE, id: '10-limb-research' },
+      text: 'Proba guidance (Limb: research.gather): Needs a landing page.',
+      data: { tier: 'detail', tags: ['tool:research.gather'] },
+    });
+    expect(Object.keys(details[0].data as object)).not.toContain('workspaceId');
+  });
+
   it('caches the global self memory for its TTL', async () => {
     let t = 0;
     const { fetchImpl, calls } = recordingFetch(() => jsonResponse(200, body));
