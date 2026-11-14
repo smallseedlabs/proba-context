@@ -160,6 +160,17 @@ Both `/v1/context` routes resolve the identity first. Errors are `{ "error": { "
 | 4 | Hybrid needs loop: registered `NeedHandler`s, round / extra-token caps, packet extension, `GET /v1/context/needs` with limits, [NEEDS](NEEDS.md) |
 | 5 | Per-source `ContextCache` (memory LRU + Redis), `POST /v1/cache/invalidate`, Prometheus `/metrics`, `/ready`, SIGHUP config reload, `scripts/bench-context.mjs` |
 
+## Analytics-driven review (pointer)
+
+Context already builds `review_performance` packets (analytics section,
+`analytics_compare` needs, `no_analytics_for_campaign` when empty). It does
+not evaluate policy or execute Ads. The closed loop (provider metrics →
+audit query → evaluator → gateway preflight → Ads) is specified in
+[proba-audit architecture](../../proba-audit/docs/ARCHITECTURE.md) and
+[proba-llm-gateway README](../../proba-llm-gateway/README.md). Snapshot
+`asOf` / campaign ids in packet items are the evidence the evaluator must
+cite; this service still never runs commands.
+
 ## Open questions
 
 - Act-as assertion scopes and the sections each grants (see [SCOPING](SCOPING.md)).
