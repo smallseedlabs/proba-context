@@ -12,6 +12,7 @@ import { AnalyticsHttpSource } from './analyticsHttpSource.js';
 import { AuditHttpSource } from './auditHttpSource.js';
 import { ConversationHttpSource } from './conversationHttpSource.js';
 import { MemoryHttpSource } from './memoryHttpSource.js';
+import { SelfMemoryHttpSource } from './selfMemoryHttpSource.js';
 import { TaskStateHttpSource } from './taskStateHttpSource.js';
 
 export interface HttpSourceEndpoints {
@@ -32,6 +33,8 @@ export type WiredHttpSource = 'memory' | 'audit' | 'analytics' | 'task' | 'conve
 
 export interface HttpSources {
   memory?: MemorySource & { listProfiles?: MemoryHttpSource['listProfiles'] };
+  /** Proba's bootstrap self memory (memory-api GET /v1/self), served first in the policy section. */
+  self?: SelfMemoryHttpSource;
   auditHistory?: AuditHistorySource;
   analytics?: AnalyticsSource & { summary?: AnalyticsHttpSource['summary'] };
   task?: TaskStateSource;
@@ -62,6 +65,7 @@ export function createHttpSources(options: CreateHttpSourcesOptions): HttpSource
     });
     result.memoryClient = memoryClient;
     result.memory = new MemoryHttpSource({ client: memoryClient });
+    result.self = new SelfMemoryHttpSource({ client: memoryClient, ...(options.now ? { now: () => options.now!().getTime() } : {}) });
     wired.push('memory');
   }
 

@@ -38,6 +38,7 @@ import {
   RedisPacketStore,
   RedisRateLimiter,
   RedisStepRoundStore,
+  SelfAwarePolicySource,
   SystemClock,
   UnconfiguredIdentityResolver,
   createHttpSources,
@@ -309,8 +310,19 @@ export function createRuntime(env: Env, configPath: string): Runtime {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Proba's bootstrap self memory (memory-api) goes first in the policy section whenever memory-api is wired.
+  const withSelf = (base: typeof policy.policy) =>
+    http?.self
+      ? new SelfAwarePolicySource({
+          base,
+          self: http.self,
+          onSelfUnavailable: (reason) =>
+            console.warn(JSON.stringify({ level: 'warn', service: 'proba-context', msg: 'self memory unavailable; packet has policy statements only', reason })),
+        })
+      : base;
+
   let sources = createInProcessSources({
-    policy: policy.policy,
+    policy: withSelf(policy.policy),
     tools: policy.tools,
     clock,
     ...(http?.memory ? { memory: http.memory } : {}),
@@ -408,7 +420,7 @@ export function createRuntime(env: Env, configPath: string): Runtime {
       policy = loadConfigPolicy(configDir, clock);
       templates = loadTemplates(join(configDir, 'templates'));
       sources = createInProcessSources({
-        policy: policy.policy,
+        policy: withSelf(policy.policy),
         tools: policy.tools,
         clock,
         ...(http?.memory ? { memory: http.memory } : {}),

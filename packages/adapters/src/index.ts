@@ -17,6 +17,8 @@ export {
   type InProcessSourcesOptions,
 } from './sources/inProcessSources.js';
 export { MemoryHttpSource, type MemoryHttpSourceOptions } from './sources/memoryHttpSource.js';
+export { SELF_MEMORY_SOURCE, SelfMemoryHttpSource, type SelfMemoryHttpSourceOptions } from './sources/selfMemoryHttpSource.js';
+export { SelfAwarePolicySource, type SelfAwarePolicySourceOptions, type SelfFetcher } from './policy/selfAwarePolicy.js';
 export { AuditHttpSource, type AuditHttpSourceOptions } from './sources/auditHttpSource.js';
 export { AnalyticsHttpSource, type AnalyticsHttpSourceOptions } from './sources/analyticsHttpSource.js';
 export { TaskStateHttpSource, type TaskStateHttpSourceOptions } from './sources/taskStateHttpSource.js';
